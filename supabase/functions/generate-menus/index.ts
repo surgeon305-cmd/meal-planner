@@ -10,8 +10,6 @@
 // Never expose it to the browser (RULES R6-1, PLAN 4).
 // ----------------------------------------------------------------------------
 
-import { createClient } from "npm:@supabase/supabase-js@2";
-import { corsHeaders, handleOptions, jsonResponse } from "../_shared/cors.ts";
 import {
   buildSingleSystemPrompt,
   buildSingleUserPrompt,
@@ -20,6 +18,35 @@ import {
   type GenerateMenusRequest,
   type GenerateSingleRequest,
 } from "./prompt.ts";
+
+// --- CORS (inlined; no cross-folder import so single-file deploy can't fail
+//     to bundle ../_shared and crash the worker at boot) ----------------------
+const corsHeaders: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+function jsonResponse(
+  body: unknown,
+  status = 200,
+  extraHeaders: Record<string, string> = {},
+): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+      ...extraHeaders,
+    },
+  });
+}
+function handleOptions(req: Request): Response | null {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { status: 204, headers: corsHeaders });
+  }
+  return null;
+}
 
 // --- Constants (RULES R0/R2/R6) ---------------------------------------------
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
@@ -400,6 +427,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return jsonResponse({ error: message }, 400);
   }
 
+  // Lazy-load supabase-js so it never runs at module boot (the 5-option mode
+  // is the only path that needs it; single mode + OPTIONS must not depend on it).
+  const { createClient } = await import("npm:@supabase/supabase-js@2");
   const supabase = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false },
   });
