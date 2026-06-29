@@ -3,7 +3,7 @@ import { useParams } from "react-router-dom";
 import AppHeader from "../components/AppHeader";
 import ScreenShell from "../components/ScreenShell";
 import CuisineChip from "../components/CuisineChip";
-import { getMenuById } from "../lib/mockData";
+import { seedPool } from "@shared/seed";
 import { isHomeMenu } from "../lib/viewTypes";
 import type { Ingredient, IngredientCategory } from "../lib/viewTypes";
 import {
@@ -13,7 +13,7 @@ import {
 } from "../lib/uiConstants";
 import { buildDineoutLinks } from "../lib/searchLinks";
 
-// TODO(Phase 1): getMenuById → useMenu(menuId). 좋아요/싫어요는 selection_events 기록.
+// TODO(Phase 1): seedPool 조회 → useMenu(menuId) (생성 메뉴 포함). 좋아요/싫어요는 selection_events 기록.
 
 type Feedback = "like" | "dislike" | null;
 
@@ -24,7 +24,7 @@ function formatQty(ing: Ingredient): string {
 
 export default function MenuDetailScreen() {
   const { menuId } = useParams<{ menuId: string }>();
-  const menu = menuId ? getMenuById(menuId) : undefined;
+  const menu = menuId ? seedPool.find((m) => m.id === menuId) : undefined;
   const [feedback, setFeedback] = useState<Feedback>(null);
 
   // 집밥 메뉴 재료를 카테고리별로 그룹화 (RULES R4 순서).

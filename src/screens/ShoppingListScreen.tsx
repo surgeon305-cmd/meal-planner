@@ -1,12 +1,29 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import AppHeader from "../components/AppHeader";
 import ScreenShell from "../components/ScreenShell";
-import { mockCartItems } from "../lib/mockData";
+import { usePlanner } from "../lib/plannerStore";
+import { aggregateIngredients } from "../lib/aggregate";
+import type { CartItem } from "../lib/aggregate";
 import { CATEGORY_LABELS, CATEGORY_ORDER } from "../lib/uiConstants";
 import { buildShoppingLinks } from "../lib/searchLinks";
-import type { CartItem, IngredientCategory } from "../lib/viewTypes";
+import { upcomingDates } from "../lib/dates";
+import type { IngredientCategory, SeedMenu } from "@shared/types";
 
-// TODO(Phase 1): mockCartItems → useCart() (확정 메뉴 재료 합산을 서버/RPC에서).
+// 장바구니는 확정 엔트리(visible horizon 14일)의 재료를 R4대로 합산한다 (RULES R4/R8-6).
+// TODO(Phase 1): localStorage 체크 상태 → 사용자별 서버 저장 (RULES R8-6).
+
+const CART_CHECKS_KEY = "cart-checks:v1";
+const HORIZON_DAYS = 14;
+
+function loadChecks(): Record<string, boolean> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(CART_CHECKS_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
+  } catch {
+    return {};
+  }
+}
 
 function formatQty(item: CartItem): string {
   if (item.unit === "약간") return "약간";
@@ -60,9 +77,32 @@ function ItemRow({ item, checked, onToggle }: ItemRowProps) {
 }
 
 export default function ShoppingListScreen() {
-  const items = mockCartItems;
-  const [checked, setChecked] = useState<Record<string, boolean>>({});
+  const { entries } = usePlanner();
+
+  // 화면 범위(오늘+13일)의 확정 메뉴 재료를 합산.
+  const items = useMemo(() => {
+    const menus: SeedMenu[] = [];
+    for (const date of upcomingDates(HORIZON_DAYS)) {
+      const day = entries[date];
+      if (!day) continue;
+      if (day.lunch) menus.push(day.lunch.menu);
+      if (day.dinner) menus.push(day.dinner.menu);
+    }
+    return aggregateIngredients(menus);
+  }, [entries]);
+
+  const [checked, setChecked] = useState<Record<string, boolean>>(loadChecks);
   const [pantryOpen, setPantryOpen] = useState(false);
+
+  // 체크 상태를 localStorage에 영구 저장 (네비게이션/새로고침에도 유지).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(CART_CHECKS_KEY, JSON.stringify(checked));
+    } catch {
+      // 무시.
+    }
+  }, [checked]);
 
   const itemKey = (item: CartItem) => `${item.name}__${item.unit}`;
   const toggle = (item: CartItem) =>
