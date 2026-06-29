@@ -1,0 +1,7 @@
+project_id = "ozfvycvdlkiqbsxxjxdw"
+
+# generate-menus는 브라우저가 직접 호출(PWA)하므로 JWT 검증을 끈다.
+# verify_jwt=true면 인증 헤더 없는 CORS 프리플라이트(OPTIONS)가 거부되어
+# 500이 나고 CORS 헤더가 안 붙는다. 인증은 함수가 필요 시 내부에서 처리.
+[functions.generate-menus]
+verify_jwt = false
