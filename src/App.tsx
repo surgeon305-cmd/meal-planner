@@ -3,6 +3,7 @@ import LoginScreen from "./screens/LoginScreen";
 import WeekPlanScreen from "./screens/WeekPlanScreen";
 import MenuDetailScreen from "./screens/MenuDetailScreen";
 import ShoppingListScreen from "./screens/ShoppingListScreen";
+import HistoryScreen from "./screens/HistoryScreen";
 import SettingsScreen from "./screens/SettingsScreen";
 import { PlannerProvider } from "./lib/plannerStore";
 
@@ -19,6 +20,7 @@ export default function App() {
         <Route path="/" element={<WeekPlanScreen />} />
         <Route path="/menu/:menuId" element={<MenuDetailScreen />} />
         <Route path="/cart" element={<ShoppingListScreen />} />
+        <Route path="/history" element={<HistoryScreen />} />
         <Route path="/settings" element={<SettingsScreen />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

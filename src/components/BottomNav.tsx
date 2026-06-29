@@ -9,10 +9,11 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { to: "/", label: "식단", icon: "🍱" },
   { to: "/cart", label: "장바구니", icon: "🛒" },
+  { to: "/history", label: "히스토리", icon: "📅" },
   { to: "/settings", label: "설정", icon: "⚙️" },
 ];
 
-/** 하단 고정 네비게이션 (식단 / 장바구니 / 설정). */
+/** 하단 고정 네비게이션 (식단 / 장바구니 / 히스토리 / 설정). */
 export default function BottomNav() {
   return (
     <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-gray-200 bg-white/95 backdrop-blur">
