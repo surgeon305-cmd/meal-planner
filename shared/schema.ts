@@ -92,6 +92,30 @@ export const PreferenceProfileSchema = z.object({
   lastServings: z.number().int().positive().nullable(),
 });
 
+/** 저장된 한 끼 (날짜+끼니 확정 엔트리) — RULES R8. */
+export const MealEntrySchema = z.object({
+  id: z.string().optional(),
+  userId: z.string().optional(),
+  /** ISO YYYY-MM-DD — RULES R8-2. */
+  entryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  meal: MealTypeEnum,
+  /** 시드 슬러그(R9) 또는 생성 id. */
+  menuId: z.string().min(1),
+  cuisine: CuisineEnum,
+  /** 확정 시점의 메뉴 스냅샷 — RULES R2/R8-3. */
+  menu: MenuOptionSchema,
+  servings: z.number().int().positive().nullable().optional(),
+});
+
+/** 시드 레시피 한 개 — RULES R9. MenuOption과 동일하되 id 필수(안정 슬러그). */
+export const SeedMenuSchema = z.discriminatedUnion('type', [
+  HomeMenuSchema.extend({ id: z.string().min(1) }),
+  DineoutMenuSchema.extend({ id: z.string().min(1) }),
+]);
+
+/** 시드 풀 전체 — RULES R9. */
+export const SeedPoolSchema = z.array(SeedMenuSchema);
+
 /** Edge Function request payload — RULES R0/R1/R6. */
 export const GenerateMenusRequestSchema = z.object({
   /** 0~6 (0 = 월요일) — RULES R0. */

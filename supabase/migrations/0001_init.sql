@@ -1,275 +1,140 @@
 -- =============================================================================
--- 0001_init.sql — Meal-planning PWA initial schema
--- Source of truth: docs/RULES.md (R0 constants/cuisine, R2 menu JSON, R3 learning,
---                   R4 categories & units) and docs/PLAN.md §5 data model.
--- Target: Supabase Postgres (uses auth.users, auth.uid(), gen_random_uuid()).
+-- 0001_init.sql — 주간 식단 추천 앱 초기 스키마
+-- 날짜 기반 모델(RULES R8) + 학습(R3) + 시드/AI 캐시(R6/R9) + 장바구니(R4).
+-- 재실행 안전(idempotent): enum guard, IF NOT EXISTS, drop-then-create policy.
 -- =============================================================================
 
--- gen_random_uuid() lives in pgcrypto on older Postgres; harmless if present.
-create extension if not exists "pgcrypto";
+create extension if not exists pgcrypto;
 
--- =============================================================================
--- ENUMS  (RULES R0 cuisine codes, R0 meal types, R2 menu type, R4 categories,
---         R3 learning actions). Guarded so the migration re-runs cleanly.
--- =============================================================================
+-- ---------------------------------------------------------------------------
+-- ENUMS (RULES R0/R2/R3/R4) — 고정 코드
+-- ---------------------------------------------------------------------------
+do $$ begin create type cuisine as enum ('KR','CN','JP','WS','DINEOUT'); exception when duplicate_object then null; end $$;
+do $$ begin create type meal_type as enum ('lunch','dinner'); exception when duplicate_object then null; end $$;
+do $$ begin create type menu_type as enum ('home','dineout'); exception when duplicate_object then null; end $$;
+do $$ begin create type ingredient_category as enum ('vegetable','fruit','meat','seafood','dairy','grain','seasoning','etc'); exception when duplicate_object then null; end $$;
+do $$ begin create type selection_action as enum ('select','like','skip','dislike'); exception when duplicate_object then null; end $$;
 
--- RULES R0: cuisine codes are FIXED to exactly these 5.
-do $$ begin
-  create type cuisine as enum ('KR', 'CN', 'JP', 'WS', 'DINEOUT');
-exception when duplicate_object then null; end $$;
-
--- RULES R0: 하루 2끼 — lunch / dinner (no breakfast).
-do $$ begin
-  create type meal_type as enum ('lunch', 'dinner');
-exception when duplicate_object then null; end $$;
-
--- RULES R2: menu option is either a home recipe or a dine-out suggestion.
-do $$ begin
-  create type menu_type as enum ('home', 'dineout');
-exception when duplicate_object then null; end $$;
-
--- RULES R4: ingredient categories are FIXED (code-locked).
-do $$ begin
-  create type ingredient_category as enum
-    ('vegetable', 'fruit', 'meat', 'seafood', 'dairy', 'grain', 'seasoning', 'etc');
-exception when duplicate_object then null; end $$;
-
--- RULES R3: learning signals / actions.
-do $$ begin
-  create type selection_action as enum ('select', 'like', 'skip', 'dislike');
-exception when duplicate_object then null; end $$;
-
--- =============================================================================
--- TABLE: preference_profiles
--- RULES R3 (learning / taste profile) + R5 (last selected servings).
--- One row per user. Holds cuisine/tag weights and hard-filter lists.
--- =============================================================================
+-- ---------------------------------------------------------------------------
+-- TABLE: preference_profiles (RULES R3 + R5) — 사용자당 1행
+-- ---------------------------------------------------------------------------
 create table if not exists public.preference_profiles (
-  user_id              uuid primary key references auth.users (id) on delete cascade,
-  cuisine_weights      jsonb        not null default '{}'::jsonb,  -- R3: per-cuisine weights
-  tag_weights          jsonb        not null default '{}'::jsonb,  -- R3: per-tag weights
-  disliked_ingredients text[]       not null default '{}',         -- R3: hard filter (dislike)
-  disliked_menu_names  text[]       not null default '{}',         -- R3: blocked menu names
-  allergies            text[]       not null default '{}',         -- R3: always hard filter
-  last_servings        int,                                        -- R5: remembered servings
-  created_at           timestamptz  not null default now()
+  user_id              uuid        primary key references auth.users (id) on delete cascade,
+  cuisine_weights      jsonb       not null default '{}',
+  tag_weights          jsonb       not null default '{}',
+  disliked_ingredients text[]      not null default '{}',
+  disliked_menu_names  text[]      not null default '{}',
+  allergies            text[]      not null default '{}',
+  last_servings        int,
+  created_at           timestamptz not null default now(),
+  updated_at           timestamptz not null default now()
 );
+comment on table public.preference_profiles is 'RULES R3 학습 가중치 + R5 마지막 인분 수. 사용자당 1행.';
 
-comment on table public.preference_profiles is
-  'RULES R3 taste profile + R5 last_servings. One row per auth user.';
-
--- =============================================================================
--- TABLE: meal_plans
--- PLAN §5 / RULES R0: a weekly plan (7 days) owned by a user.
--- =============================================================================
-create table if not exists public.meal_plans (
-  id              uuid        primary key default gen_random_uuid(),
-  user_id         uuid        not null references auth.users (id) on delete cascade,
-  week_start_date date        not null,                            -- R0: week = 7 days, day 0 = Mon
-  created_at      timestamptz not null default now()
+-- ---------------------------------------------------------------------------
+-- TABLE: meal_entries (RULES R8) — (날짜, 끼니)에 확정 저장된 한 끼.
+-- 핵심 테이블: 선택하면 upsert, 안 한 끼니는 행 없음(자동 제외).
+-- ---------------------------------------------------------------------------
+create table if not exists public.meal_entries (
+  id          uuid        primary key default gen_random_uuid(),
+  user_id     uuid        not null references auth.users (id) on delete cascade,
+  entry_date  date        not null,                          -- R8-2 날짜 기준
+  meal        meal_type   not null,
+  menu_id     text        not null,                          -- 시드 슬러그(R9) 또는 생성 id
+  cuisine     cuisine     not null,                          -- R1-4 쿨다운 쿼리용
+  menu        jsonb       not null,                          -- R2 메뉴 스냅샷(레시피+재료 포함)
+  servings    int,                                           -- R5
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  unique (user_id, entry_date, meal)                         -- 끼니당 1개 확정
 );
+comment on table public.meal_entries is 'RULES R8 날짜별 확정 식단. (user, date, meal) 유니크 upsert. 주 단위 누적 히스토리의 원천.';
 
-comment on table public.meal_plans is
-  'PLAN §5 weekly plan (week_start_date). RULES R0 week = 7 days.';
-
--- =============================================================================
--- TABLE: meal_slots
--- RULES R0: 14 slots per week = (dayIndex 0..6) x (lunch|dinner).
--- selected_menu_id points at the chosen menu_options row (nullable until chosen).
--- =============================================================================
-create table if not exists public.meal_slots (
-  id               uuid        primary key default gen_random_uuid(),
-  plan_id          uuid        not null references public.meal_plans (id) on delete cascade,
-  day_index        int         not null check (day_index between 0 and 6),  -- R0: 0=Mon .. 6=Sun
-  meal             meal_type   not null,
-  selected_menu_id uuid,                                            -- FK added after menu_options
-  created_at       timestamptz not null default now(),
-  unique (plan_id, day_index, meal)                                -- R0: one slot per (day, meal)
-);
-
-comment on table public.meal_slots is
-  'RULES R0 the 14 weekly slots: (day_index 0..6) x (lunch|dinner).';
-
--- =============================================================================
--- TABLE: menu_options
--- RULES R1 (always 5 options/slot) + R2 (full recipe+ingredients JSON payload).
--- =============================================================================
-create table if not exists public.menu_options (
-  id                  uuid        primary key default gen_random_uuid(),
-  slot_id             uuid        not null references public.meal_slots (id) on delete cascade,
-  cuisine             cuisine     not null,                        -- R0 code
-  menu_type           menu_type   not null,                        -- R2: home | dineout
-  payload             jsonb       not null,                        -- R2: full menu JSON contract
-  was_selected        boolean     not null default false,
-  was_refreshed_away  boolean     not null default false,          -- R1-5: removed by refresh (skip)
-  created_at          timestamptz not null default now()
-);
-
-comment on table public.menu_options is
-  'RULES R1 5 options per slot + R2 recipe/ingredient JSON payload.';
-
--- meal_slots.selected_menu_id -> menu_options.id (deferred so both tables exist).
-do $$ begin
-  alter table public.meal_slots
-    add constraint meal_slots_selected_menu_id_fkey
-    foreign key (selected_menu_id) references public.menu_options (id) on delete set null;
-exception when duplicate_object then null; end $$;
-
--- =============================================================================
--- TABLE: menu_cache
--- RULES R6-2: on-demand + caching. Keyed by constraint bucket
--- (day/meal/excluded-cuisine/taste bucket). Shared, not user-owned.
--- =============================================================================
-create table if not exists public.menu_cache (
-  id                uuid        primary key default gen_random_uuid(),
-  cache_key         text        not null,                          -- R6-2: cache lookup key {day|meal|excluded|servings}
-  day_index         int         not null check (day_index between 0 and 6),
-  meal              meal_type   not null,
-  excluded_cuisines text[]      not null default '{}',             -- R1-4 cooldown bucket
-  servings          int,                                           -- R5
-  payload           jsonb       not null,                          -- R2 menu JSON (array of 5 options)
-  hit_count         int         not null default 0,
-  created_at        timestamptz not null default now()
-);
-
-comment on table public.menu_cache is
-  'RULES R6-2 generated-menu reuse cache. Shared across users (read-only to clients).';
-
--- =============================================================================
--- TABLE: selection_events
--- RULES R3: behaviour log used to update preference weights.
--- =============================================================================
+-- ---------------------------------------------------------------------------
+-- TABLE: selection_events (RULES R3) — 학습용 행동 로그
+-- ---------------------------------------------------------------------------
 create table if not exists public.selection_events (
   id         uuid             primary key default gen_random_uuid(),
   user_id    uuid             not null references auth.users (id) on delete cascade,
+  menu_id    text,
   menu_name  text,
   cuisine    cuisine,
   tags       text[]           not null default '{}',
-  action     selection_action not null,                            -- R3: select|like|skip|dislike
+  action     selection_action not null,
   created_at timestamptz      not null default now()
 );
+comment on table public.selection_events is 'RULES R3 행동 로그(select/like/skip/dislike) → 가중치 갱신.';
 
-comment on table public.selection_events is
-  'RULES R3 learning event log (select/like/skip/dislike) per user.';
-
--- =============================================================================
--- TABLE: shopping_list_items
--- RULES R4: normalized + summed ingredients for a plan's confirmed menus.
--- =============================================================================
-create table if not exists public.shopping_list_items (
-  id              uuid                primary key default gen_random_uuid(),
-  plan_id         uuid                not null references public.meal_plans (id) on delete cascade,
-  normalized_name text                not null,                    -- R4: normalized ingredient name
-  quantity        numeric,                                         -- R4: null for '약간'
-  unit            text,                                            -- R4 fixed unit codes
-  category        ingredient_category not null,                   -- R4 fixed category codes
-  pantry_staple   boolean             not null default false,      -- R4: basic seasoning grouping
-  checked         boolean             not null default false,
-  source_menu_ids uuid[]              not null default '{}',       -- menu_options that contributed
-  created_at      timestamptz         not null default now()
+-- ---------------------------------------------------------------------------
+-- TABLE: menu_cache (RULES R6-2) — AI 생성 보충분 캐시(시드로 부족할 때만).
+-- 공유 테이블: 클라이언트는 읽기만, 쓰기는 Edge Function service role.
+-- ---------------------------------------------------------------------------
+create table if not exists public.menu_cache (
+  id                uuid        primary key default gen_random_uuid(),
+  cache_key         text        not null,                    -- {dayBucket|meal|excluded|servings}
+  day_index         int         not null check (day_index between 0 and 6),
+  meal              meal_type   not null,
+  excluded_cuisines text[]      not null default '{}',
+  servings          int,
+  payload           jsonb       not null,                    -- R2 옵션 배열
+  hit_count         int         not null default 0,
+  created_at        timestamptz not null default now()
 );
+comment on table public.menu_cache is 'RULES R6-2 AI 생성 메뉴 재사용 캐시. 공유(클라이언트 읽기 전용).';
 
-comment on table public.shopping_list_items is
-  'RULES R4 normalized/summed shopping items for a plan''s confirmed menus.';
+-- ---------------------------------------------------------------------------
+-- TABLE: shopping_checks (RULES R8-6 + R4) — 장바구니 체크 상태 유지
+-- 장바구니 항목 자체는 meal_entries에서 파생(합산)하고, 체크 여부만 저장한다.
+-- ---------------------------------------------------------------------------
+create table if not exists public.shopping_checks (
+  id         uuid        primary key default gen_random_uuid(),
+  user_id    uuid        not null references auth.users (id) on delete cascade,
+  scope      text        not null,                           -- 주 시작일 'YYYY-MM-DD' 또는 범위 키
+  item_key   text        not null,                           -- 정규화명 + '|' + 단위 (R4)
+  checked    boolean     not null default true,
+  created_at timestamptz not null default now(),
+  unique (user_id, scope, item_key)
+);
+comment on table public.shopping_checks is 'RULES R8-6 장바구니 체크 유지. 항목은 meal_entries에서 합산, 여기엔 체크 상태만.';
 
--- =============================================================================
+-- ---------------------------------------------------------------------------
 -- INDEXES
--- =============================================================================
-create index if not exists meal_slots_plan_id_idx          on public.meal_slots (plan_id);
-create index if not exists menu_options_slot_id_idx         on public.menu_options (slot_id);
-create index if not exists selection_events_user_id_idx     on public.selection_events (user_id);
-create index if not exists shopping_list_items_plan_id_idx  on public.shopping_list_items (plan_id);
-create index if not exists meal_plans_user_id_idx           on public.meal_plans (user_id);
-create unique index if not exists menu_cache_cache_key_key
-  on public.menu_cache (cache_key);
+-- ---------------------------------------------------------------------------
+create index if not exists meal_entries_user_date_idx     on public.meal_entries (user_id, entry_date);
+create index if not exists selection_events_user_id_idx   on public.selection_events (user_id);
+create index if not exists shopping_checks_user_scope_idx on public.shopping_checks (user_id, scope);
+create unique index if not exists menu_cache_cache_key_key on public.menu_cache (cache_key);
 
--- =============================================================================
+-- ---------------------------------------------------------------------------
 -- ROW LEVEL SECURITY
--- Every user-owned table: a user may only touch rows they own (user_id = auth.uid()).
--- Child tables (meal_slots / menu_options / shopping_list_items) resolve ownership
--- by joining up to meal_plans via EXISTS subqueries.
--- menu_cache is shared: authenticated users may SELECT; writes via service role only.
--- =============================================================================
+-- 사용자 소유 테이블: user_id = auth.uid() 행만 접근. menu_cache는 공유 읽기.
+-- ---------------------------------------------------------------------------
+alter table public.preference_profiles enable row level security;
+alter table public.meal_entries        enable row level security;
+alter table public.selection_events    enable row level security;
+alter table public.menu_cache          enable row level security;
+alter table public.shopping_checks     enable row level security;
 
-alter table public.preference_profiles  enable row level security;
-alter table public.meal_plans           enable row level security;
-alter table public.meal_slots           enable row level security;
-alter table public.menu_options         enable row level security;
-alter table public.menu_cache           enable row level security;
-alter table public.selection_events     enable row level security;
-alter table public.shopping_list_items  enable row level security;
-
--- --- preference_profiles: owner is user_id ----------------------------------
 drop policy if exists preference_profiles_owner on public.preference_profiles;
 create policy preference_profiles_owner on public.preference_profiles
-  for all to authenticated
-  using (user_id = auth.uid())
-  with check (user_id = auth.uid());
+  for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
 
--- --- meal_plans: owner is user_id -------------------------------------------
-drop policy if exists meal_plans_owner on public.meal_plans;
-create policy meal_plans_owner on public.meal_plans
-  for all to authenticated
-  using (user_id = auth.uid())
-  with check (user_id = auth.uid());
+drop policy if exists meal_entries_owner on public.meal_entries;
+create policy meal_entries_owner on public.meal_entries
+  for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
 
--- --- selection_events: owner is user_id -------------------------------------
 drop policy if exists selection_events_owner on public.selection_events;
 create policy selection_events_owner on public.selection_events
-  for all to authenticated
-  using (user_id = auth.uid())
-  with check (user_id = auth.uid());
+  for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
 
--- --- meal_slots: ownership via parent meal_plans ----------------------------
-drop policy if exists meal_slots_owner on public.meal_slots;
-create policy meal_slots_owner on public.meal_slots
-  for all to authenticated
-  using (exists (
-    select 1 from public.meal_plans p
-    where p.id = meal_slots.plan_id and p.user_id = auth.uid()
-  ))
-  with check (exists (
-    select 1 from public.meal_plans p
-    where p.id = meal_slots.plan_id and p.user_id = auth.uid()
-  ));
+drop policy if exists shopping_checks_owner on public.shopping_checks;
+create policy shopping_checks_owner on public.shopping_checks
+  for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
 
--- --- menu_options: ownership via slot -> plan -------------------------------
-drop policy if exists menu_options_owner on public.menu_options;
-create policy menu_options_owner on public.menu_options
-  for all to authenticated
-  using (exists (
-    select 1
-    from public.meal_slots s
-    join public.meal_plans p on p.id = s.plan_id
-    where s.id = menu_options.slot_id and p.user_id = auth.uid()
-  ))
-  with check (exists (
-    select 1
-    from public.meal_slots s
-    join public.meal_plans p on p.id = s.plan_id
-    where s.id = menu_options.slot_id and p.user_id = auth.uid()
-  ));
-
--- --- shopping_list_items: ownership via parent meal_plans -------------------
-drop policy if exists shopping_list_items_owner on public.shopping_list_items;
-create policy shopping_list_items_owner on public.shopping_list_items
-  for all to authenticated
-  using (exists (
-    select 1 from public.meal_plans p
-    where p.id = shopping_list_items.plan_id and p.user_id = auth.uid()
-  ))
-  with check (exists (
-    select 1 from public.meal_plans p
-    where p.id = shopping_list_items.plan_id and p.user_id = auth.uid()
-  ));
-
--- --- menu_cache: shared read-only (RULES R6-2) ------------------------------
--- Authenticated clients may read the cache; writes happen only from the
--- Edge Function using the service role (which bypasses RLS).
+-- menu_cache: 인증 사용자 읽기만(쓰기는 service role이 RLS 우회).
 drop policy if exists menu_cache_read on public.menu_cache;
 create policy menu_cache_read on public.menu_cache
-  for select to authenticated
-  using (true);
+  for select to authenticated using (true);
 
 -- =============================================================================
 -- END 0001_init.sql

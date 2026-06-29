@@ -9,6 +9,9 @@ import {
   MenuOptionsResponseSchema,
   PreferenceProfileSchema,
   GenerateMenusRequestSchema,
+  MealEntrySchema,
+  SeedMenuSchema,
+  SeedPoolSchema,
 } from './schema';
 
 /**
@@ -25,6 +28,9 @@ export type MenuOptionArray = z.infer<typeof MenuOptionArraySchema>;
 export type MenuOptionsResponse = z.infer<typeof MenuOptionsResponseSchema>;
 export type PreferenceProfile = z.infer<typeof PreferenceProfileSchema>;
 export type GenerateMenusRequest = z.infer<typeof GenerateMenusRequestSchema>;
+export type MealEntry = z.infer<typeof MealEntrySchema>;
+export type SeedMenu = z.infer<typeof SeedMenuSchema>;
+export type SeedPool = z.infer<typeof SeedPoolSchema>;
 
 // Re-export enum types for convenience.
 export type {
