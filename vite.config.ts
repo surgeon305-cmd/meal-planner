@@ -9,6 +9,14 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
+      // 등록은 main.tsx에서 직접(주기적 업데이트 체크 위해).
+      injectRegister: false,
+      workbox: {
+        // 새 SW를 즉시 활성화 → 캐시 삭제/수동 업데이트 없이 최신 반영.
+        clientsClaim: true,
+        skipWaiting: true,
+        cleanupOutdatedCaches: true,
+      },
       includeAssets: ["favicon.svg", "apple-touch-icon.png"],
       manifest: {
         name: "주간 식단 추천",

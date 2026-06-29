@@ -31,7 +31,8 @@
 | AI | Claude API · 기본 **`claude-opus-4-8`** | **Edge Function 안에서만 호출** (키 보호). 5선지 + single 모드 |
 | 추천 출처 | **시드 풀 120개 우선** + AI 보충 | 일상은 시드, AI는 '추가 생성'·부족 시 |
 | 저장 | 취향=localStorage / 식단=Supabase | 학습·variant는 localStorage, 엔트리는 DB |
-| 배포 | 프론트: Vercel/Netlify · 백엔드: Supabase 클라우드 | |
+| 배포 | 프론트: Vercel/Netlify · 백엔드: Supabase 클라우드 | RULES R12 |
+| PWA 업데이트 | autoUpdate + 60초 폴링 → 자동 새로고침 | 캐시 삭제·수동 업데이트 불필요 (R12-4) |
 
 ## 4. 시스템 구성 (데이터 흐름)
 ```
@@ -75,6 +76,7 @@
 - 영구 저장(Supabase `meal_entries`, 활성 식단 스코프)
 - 취향 학습(좋아요/싫어요·알레르기·비선호 → 추천 반영), 인분 수 재료 스케일
 - AI 메뉴 검색/추가(＋버튼, single 모드), 식단 공유(plans/멤버/공유코드), PWA 아이콘
+- **PWA 실시간 자동 업데이트**(autoUpdate + 60초 폴링 → 자동 새로고침, R12-4)
 
 ### 사용자 액션 필요 ⚠️
 - **`0002_sharing.sql` 적용**(미적용 시 런타임 에러) — Supabase SQL Editor
