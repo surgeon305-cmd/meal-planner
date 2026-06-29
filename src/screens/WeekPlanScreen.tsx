@@ -1,35 +1,31 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import AppHeader from "../components/AppHeader";
 import ScreenShell from "../components/ScreenShell";
 import MenuOptionCard from "../components/MenuOptionCard";
 import CuisineChip from "../components/CuisineChip";
+import CalendarMonth from "../components/CalendarMonth";
 import { buildSlotOptions } from "../lib/recommend";
 import { usePlanner } from "../lib/plannerStore";
 import type { DayEntries } from "../lib/plannerStore";
 import { MEAL_LABELS } from "../lib/uiConstants";
 import {
   addDaysISO,
-  fromISODate,
   isToday,
   monthDay,
-  mondayOf,
   todayISO,
-  upcomingDates,
   weekdayLabel,
 } from "../lib/dates";
-import type { Cuisine, MealType } from "@shared/types";
+import type { Cuisine, MealType, SeedMenu } from "@shared/types";
 
-/** 편집 가능 범위(horizon): 오늘 + 향후 13일 = 14일 (RULES R8-2). */
-const HORIZON_DAYS = 14;
 const MEALS: MealType[] = ["lunch", "dinner"];
 
 /**
  * 쿨다운(RULES R1-4) — 해당 (날짜, 끼니) 슬롯에서 제외할 요리종류 계산.
  * ⚠️ 쿨다운 로직의 단일 위치는 이 함수다.
  *  - 전날 단위: 바로 전 날짜의 확정 엔트리(점심·저녁)에서 먹은 요리종류 제외.
- *    (전날 엔트리가 없으면 = 거른 날 → 쿨다운 없음.)
- *  - 같은 날 끼니 간: 저녁 슬롯은 같은 날 점심에 확정한 요리종류도 제외.
- *  - DINEOUT(외식)은 절대 제외하지 않는다 (매 끼 1선지 유지).
+ *  - 같은 날 끼니 간: 저녁 슬롯은 같은 날 점심 확정 요리종류도 제외.
+ *  - DINEOUT(외식)은 절대 제외하지 않는다.
  */
 function cooldownCuisines(
   entries: Record<string, DayEntries>,
@@ -37,18 +33,13 @@ function cooldownCuisines(
   meal: MealType,
 ): Cuisine[] {
   const excluded = new Set<Cuisine>();
-
-  const prevDate = addDaysISO(date, -1);
-  const prevDay = entries[prevDate];
+  const prevDay = entries[addDaysISO(date, -1)];
   if (prevDay?.lunch) excluded.add(prevDay.lunch.cuisine);
   if (prevDay?.dinner) excluded.add(prevDay.dinner.cuisine);
-
   if (meal === "dinner") {
     const lunch = entries[date]?.lunch;
     if (lunch) excluded.add(lunch.cuisine);
   }
-
-  // 외식은 쿨다운 대상에서 제외하지 않는다.
   excluded.delete("DINEOUT");
   return [...excluded];
 }
@@ -56,19 +47,8 @@ function cooldownCuisines(
 function dayLabel(date: string): string {
   if (isToday(date)) return "오늘";
   if (date === addDaysISO(todayISO(), 1)) return "내일";
+  if (date === addDaysISO(todayISO(), -1)) return "어제";
   return `${weekdayLabel(date)}요일`;
-}
-
-/** 주(월요일 시작) 그룹 헤더 라벨 — 이번 주/다음 주/그 외 (RULES R8-5). */
-function weekLabel(monday: string, todayMonday: string): string {
-  const diffDays = Math.round(
-    (fromISODate(monday).getTime() - fromISODate(todayMonday).getTime()) /
-      86_400_000,
-  );
-  const w = Math.round(diffDays / 7);
-  if (w === 0) return "이번 주";
-  if (w === 1) return "다음 주";
-  return `${monthDay(monday)} 주`;
 }
 
 interface SlotCardProps {
@@ -76,6 +56,10 @@ interface SlotCardProps {
   meal: MealType;
 }
 
+/**
+ * 한 끼 슬롯. 선지에서 고른 뒤 "확정" 버튼으로 저장한다(드래프트 → 확정).
+ * 확정된 슬롯은 요약을 보여주고 "수정 / 확정 취소"가 가능하다.
+ */
 function SlotCard({ date, meal }: SlotCardProps) {
   const navigate = useNavigate();
   const { entries, getEntry, getVariant, selectMenu, clearSelection, refreshSlot } =
@@ -83,8 +67,38 @@ function SlotCard({ date, meal }: SlotCardProps) {
 
   const entry = getEntry(date, meal);
   const variant = getVariant(date, meal);
+
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<SeedMenu | null>(null);
+
   const excludedCuisines = cooldownCuisines(entries, date, meal);
   const options = buildSlotOptions({ excludedCuisines, variant });
+
+  const showOptions = !entry || editing;
+
+  const startEdit = () => {
+    setDraft(entry ? entry.menu : null);
+    setEditing(true);
+  };
+  const cancelEdit = () => {
+    setEditing(false);
+    setDraft(null);
+  };
+  const confirm = () => {
+    if (!draft) return;
+    selectMenu(date, meal, draft);
+    setEditing(false);
+    setDraft(null);
+  };
+  const cancelConfirm = () => {
+    clearSelection(date, meal);
+    setEditing(false);
+    setDraft(null);
+  };
+  const refresh = () => {
+    refreshSlot(date, meal);
+    setDraft(null);
+  };
 
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-3 shadow-sm">
@@ -93,134 +107,198 @@ function SlotCard({ date, meal }: SlotCardProps) {
           <span className="text-sm font-semibold text-gray-800">
             {MEAL_LABELS[meal]}
           </span>
-          {entry ? (
+          {entry && !editing ? (
             <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
               확정
             </span>
           ) : (
-            <span className="text-xs text-gray-400">5개 선지</span>
+            <span className="text-xs text-gray-400">5개 선지 중 선택</span>
           )}
         </div>
-        <button
-          type="button"
-          onClick={() => refreshSlot(date, meal)}
-          className="rounded-md border border-gray-200 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50"
-        >
-          ↻ 갱신
-        </button>
+        {showOptions && (
+          <button
+            type="button"
+            onClick={refresh}
+            className="rounded-md border border-gray-200 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50"
+          >
+            ↻ 갱신
+          </button>
+        )}
       </div>
 
-      {/* 확정된 슬롯: 선택 메뉴를 크게 보여주고 변경 어포던스 제공. */}
-      {entry && (
-        <div className="mb-3 flex items-center justify-between gap-2 rounded-xl border border-green-200 bg-green-50 p-3">
-          <div className="min-w-0">
-            <div className="mb-1 flex items-center gap-1.5">
-              <CuisineChip cuisine={entry.cuisine} />
-              {entry.menu.type === "dineout" && (
-                <span className="rounded-full bg-white/70 px-2 py-0.5 text-xs font-medium text-gray-600">
-                  외식
-                </span>
-              )}
-            </div>
-            <p className="truncate font-semibold text-gray-900">
-              {entry.menu.name}
-            </p>
+      {/* 확정 상태 요약 (편집 중이 아닐 때) */}
+      {entry && !editing && (
+        <div className="rounded-xl border border-green-200 bg-green-50 p-3">
+          <div className="mb-1 flex items-center gap-1.5">
+            <CuisineChip cuisine={entry.cuisine} />
+            {entry.menu.type === "dineout" && (
+              <span className="rounded-full bg-white/70 px-2 py-0.5 text-xs font-medium text-gray-600">
+                외식
+              </span>
+            )}
           </div>
-          <div className="flex shrink-0 items-center gap-1">
+          <p className="mb-3 font-semibold text-gray-900">{entry.menu.name}</p>
+          <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => navigate(`/menu/${entry.menuId}`)}
-              className="rounded-md px-2 py-1 text-xs font-medium text-blue-600 hover:bg-white/60"
+              className="flex-1 rounded-lg border border-gray-200 bg-white py-2 text-xs font-semibold text-blue-600 hover:bg-gray-50"
             >
-              상세 →
+              상세 보기
             </button>
             <button
               type="button"
-              onClick={() => clearSelection(date, meal)}
-              className="rounded-md border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50"
+              onClick={startEdit}
+              className="flex-1 rounded-lg border border-gray-200 bg-white py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50"
             >
-              변경
+              수정
+            </button>
+            <button
+              type="button"
+              onClick={cancelConfirm}
+              className="flex-1 rounded-lg border border-red-200 bg-white py-2 text-xs font-semibold text-red-600 hover:bg-red-50"
+            >
+              확정 취소
             </button>
           </div>
         </div>
       )}
 
-      <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
-        {options.map((menu) => (
-          <div key={menu.id} className="w-44 shrink-0">
-            <MenuOptionCard
-              menu={menu}
-              selected={entry?.menuId === menu.id}
-              onSelect={() => selectMenu(date, meal, menu)}
-              onDetail={() => navigate(`/menu/${menu.id}`)}
-            />
+      {/* 선지 선택 + 확정 버튼 */}
+      {showOptions && (
+        <>
+          <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
+            {options.map((menu) => (
+              <div key={menu.id} className="w-44 shrink-0">
+                <MenuOptionCard
+                  menu={menu}
+                  selected={draft?.id === menu.id}
+                  onSelect={() => setDraft(menu)}
+                  onDetail={() => navigate(`/menu/${menu.id}`)}
+                />
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={confirm}
+              disabled={!draft}
+              className={`flex-1 rounded-lg py-2.5 text-sm font-bold transition ${
+                draft
+                  ? "bg-gray-900 text-white hover:bg-gray-800"
+                  : "cursor-not-allowed bg-gray-100 text-gray-400"
+              }`}
+            >
+              {draft ? `'${draft.name}' 확정` : "메뉴를 선택하세요"}
+            </button>
+            {editing && (
+              <button
+                type="button"
+                onClick={cancelEdit}
+                className="rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-50"
+              >
+                취소
+              </button>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
 export default function WeekPlanScreen() {
-  const { confirmedCount } = usePlanner();
-  const dates = upcomingDates(HORIZON_DAYS);
-  const todayMonday = mondayOf(todayISO());
-
-  let lastWeek = "";
+  const { entries, confirmedCount } = usePlanner();
+  const [activeDate, setActiveDate] = useState(() => todayISO());
+  const [view, setView] = useState<"day" | "calendar">("day");
 
   return (
     <ScreenShell>
       <AppHeader
         title="식단"
-        subtitle={`오늘부터 2주 · ${confirmedCount}끼 확정`}
+        subtitle={`${confirmedCount}끼 확정`}
         action={
-          <span className="rounded-full bg-gray-900 px-2.5 py-1 text-xs font-semibold text-white">
-            {confirmedCount}끼
-          </span>
+          <button
+            type="button"
+            onClick={() => setView((v) => (v === "day" ? "calendar" : "day"))}
+            className="rounded-full border border-gray-200 px-3 py-1 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+          >
+            {view === "day" ? "📅 달력" : "✕ 닫기"}
+          </button>
         }
       />
 
-      <div className="space-y-5 px-4 py-4">
-        {dates.map((date) => {
-          const monday = mondayOf(date);
-          const showWeekHeading = monday !== lastWeek;
-          lastWeek = monday;
-          const today = isToday(date);
+      {view === "calendar" ? (
+        <CalendarMonth
+          selectedDate={activeDate}
+          entries={entries}
+          onPickDate={(d) => {
+            setActiveDate(d);
+            setView("day");
+          }}
+        />
+      ) : (
+        <>
+          {/* 날짜 네비게이션 (전날 / 날짜 / 다음날) */}
+          <div className="sticky top-0 z-10 flex items-center justify-between border-b border-gray-100 bg-gray-50/95 px-3 py-2 backdrop-blur">
+            <button
+              type="button"
+              onClick={() => setActiveDate((d) => addDaysISO(d, -1))}
+              className="flex h-9 w-9 items-center justify-center rounded-full text-gray-500 hover:bg-gray-200"
+              aria-label="전날"
+            >
+              ◀
+            </button>
 
-          return (
-            <div key={date}>
-              {showWeekHeading && (
-                <h2 className="mb-2 mt-1 text-xs font-bold uppercase tracking-wide text-gray-400">
-                  {weekLabel(monday, todayMonday)}
-                </h2>
+            <button
+              type="button"
+              onClick={() => setView("calendar")}
+              className="flex flex-col items-center"
+            >
+              <span className="flex items-baseline gap-1.5">
+                <span className="text-base font-bold text-gray-900">
+                  {dayLabel(activeDate)}
+                </span>
+                <span className="text-xs text-gray-400">
+                  {monthDay(activeDate)} ({weekdayLabel(activeDate)})
+                </span>
+              </span>
+              {!isToday(activeDate) && (
+                <span className="text-[11px] text-blue-600">달력 열기</span>
               )}
+            </button>
 
-              <section
-                className={`rounded-2xl ${
-                  today ? "ring-2 ring-gray-900" : ""
-                }`}
+            <button
+              type="button"
+              onClick={() => setActiveDate((d) => addDaysISO(d, 1))}
+              className="flex h-9 w-9 items-center justify-center rounded-full text-gray-500 hover:bg-gray-200"
+              aria-label="다음날"
+            >
+              ▶
+            </button>
+          </div>
+
+          {!isToday(activeDate) && (
+            <div className="px-4 pt-2">
+              <button
+                type="button"
+                onClick={() => setActiveDate(todayISO())}
+                className="rounded-full bg-gray-900 px-3 py-1 text-xs font-medium text-white"
               >
-                <h3 className="mb-2 flex items-baseline gap-2 px-1">
-                  <span
-                    className={`text-sm font-bold ${
-                      today ? "text-gray-900" : "text-gray-700"
-                    }`}
-                  >
-                    {dayLabel(date)}
-                  </span>
-                  <span className="text-xs text-gray-400">{monthDay(date)}</span>
-                </h3>
-
-                <div className="space-y-3">
-                  {MEALS.map((meal) => (
-                    <SlotCard key={meal} date={date} meal={meal} />
-                  ))}
-                </div>
-              </section>
+                오늘로
+              </button>
             </div>
-          );
-        })}
-      </div>
+          )}
+
+          <div className="space-y-3 px-4 py-3">
+            {MEALS.map((meal) => (
+              <SlotCard key={`${activeDate}-${meal}`} date={activeDate} meal={meal} />
+            ))}
+          </div>
+        </>
+      )}
     </ScreenShell>
   );
 }

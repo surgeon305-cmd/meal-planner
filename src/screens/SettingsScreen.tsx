@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import AppHeader from "../components/AppHeader";
 import ScreenShell from "../components/ScreenShell";
 import ChipInput from "../components/ChipInput";
+import { useAuth } from "../lib/auth";
 
 // TODO(Phase 1): localStorage → preference_profiles (Supabase). 학습 초기화는 RPC 호출.
 
@@ -9,6 +11,9 @@ const SERVINGS_KEY = "mp.servings";
 const SERVINGS_OPTIONS = [1, 2, 3, 4, 5, 6];
 
 export default function SettingsScreen() {
+  const navigate = useNavigate();
+  const { user, signOut } = useAuth();
+
   // RULES R5: 고정 기본 인분 없음. 마지막 선택값을 기억하되 강제 고정하지 않는다.
   const [servings, setServings] = useState<number | null>(() => {
     const saved =
@@ -28,6 +33,11 @@ export default function SettingsScreen() {
     setDisliked([]);
     setResetDone(true);
     window.setTimeout(() => setResetDone(false), 2000);
+  };
+
+  const handleSignOut = async () => {
+    await signOut();
+    navigate("/login");
   };
 
   return (
@@ -103,8 +113,22 @@ export default function SettingsScreen() {
           </button>
         </section>
 
+        {/* 계정 */}
+        <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+          <h2 className="text-sm font-bold text-gray-900">계정</h2>
+          <p className="mt-0.5 mb-3 text-xs text-gray-500">
+            {user?.email ? `${user.email} 로 로그인됨` : "로그인 정보를 불러오는 중…"}
+          </p>
+          <button
+            type="button"
+            onClick={handleSignOut}
+            className="w-full rounded-lg border border-gray-300 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+          >
+            로그아웃
+          </button>
+        </section>
+
         <p className="px-1 text-center text-xs text-gray-400">
-          {/* 로그인된 사용자: surgeon305@gmail.com — Phase 1에서 실제 세션과 연결 */}
           설정은 현재 기기에만 저장돼요 (임시).
         </p>
       </div>

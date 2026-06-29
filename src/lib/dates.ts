@@ -59,3 +59,36 @@ export function isToday(iso: string): boolean {
 export function isPast(iso: string): boolean {
   return iso < todayISO();
 }
+
+/** 해당 날짜가 속한 달의 1일 ISO. */
+export function firstOfMonthISO(iso: string): string {
+  const d = fromISODate(iso);
+  return toISODate(new Date(d.getFullYear(), d.getMonth(), 1, 12));
+}
+
+/** n개월 이동한 달의 1일 ISO (달력 네비게이션용). */
+export function addMonthsISO(iso: string, n: number): string {
+  const d = fromISODate(iso);
+  return toISODate(new Date(d.getFullYear(), d.getMonth() + n, 1, 12));
+}
+
+/** 'YYYY년 M월' 라벨. */
+export function monthLabel(iso: string): string {
+  const d = fromISODate(iso);
+  return `${d.getFullYear()}년 ${d.getMonth() + 1}월`;
+}
+
+/** 같은 달인지. */
+export function isSameMonth(a: string, b: string): boolean {
+  return a.slice(0, 7) === b.slice(0, 7);
+}
+
+/**
+ * 월요일 시작 6주(42칸) 달력 그리드의 ISO 날짜 배열.
+ * anchor 가 속한 달을 채우고 앞뒤를 이웃 달 날짜로 패딩한다.
+ */
+export function monthGridDates(anchorISO: string): string[] {
+  const first = firstOfMonthISO(anchorISO);
+  const start = mondayOf(first);
+  return Array.from({ length: 42 }, (_, i) => addDaysISO(start, i));
+}

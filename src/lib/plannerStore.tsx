@@ -1,9 +1,10 @@
 // =============================================================================
-// PlannerStore — 날짜 기반 확정 엔트리 + 슬롯 갱신 variant의 영구 저장소.
-// RULES R8 (날짜 기반 모델 · 확정=엔트리 저장 · 거른 날 자동 제외).
+// PlannerStore — 날짜 기반 확정 엔트리의 영구 저장소.
+// ENTRIES는 Supabase `meal_entries`가 단일 출처(RULES R8-3). 슬롯 갱신 variant만
+// 기기별 UI 상태로 localStorage에 남긴다.
 //
-// 저장은 작은 어댑터 인터페이스(PlannerPersistence) 뒤에 둔다. 지금은 localStorage
-// 구현을 쓰고, Phase 1에서 Supabase로 갈아끼운다 (인터페이스는 그대로).
+// 소비 화면(WeekPlan/History/ShoppingList/MenuDetail)이 쓰는 PlannerContextValue
+// 인터페이스는 그대로 유지한다.
 // =============================================================================
 import {
   createContext,
@@ -11,10 +12,13 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import type { ReactNode } from "react";
 import type { Cuisine, MealType, SeedMenu } from "@shared/types";
+import { supabase } from "./supabaseClient";
+import { useAuth } from "./auth";
 
 /** 확정된 한 끼 (날짜+끼니에 저장되는 엔트리) — RULES R8-3. */
 export interface Entry {
@@ -30,57 +34,42 @@ export interface DayEntries {
   dinner?: Entry;
 }
 
-/** 전체 상태: 날짜별 확정 엔트리 + 슬롯별 갱신 variant. */
-export interface PlannerState {
-  /** key: 'YYYY-MM-DD' */
-  entries: Record<string, DayEntries>;
-  /** key: `${date}:${meal}` → 갱신 횟수(시드값). */
-  variant: Record<string, number>;
+/** key: `${date}:${meal}` → 갱신 횟수(시드값). */
+type VariantMap = Record<string, number>;
+
+/** Supabase `meal_entries` 행(필요 컬럼만). */
+interface MealEntryRow {
+  entry_date: string;
+  meal: MealType;
+  menu_id: string;
+  cuisine: Cuisine;
+  menu: SeedMenu;
 }
 
-/**
- * 저장 어댑터 — load/save만 노출한다. UI/스토어는 구현을 모른다.
- * TODO(Phase 1): swap adapter to Supabase meal_entries (RULES R8-3). Interface stays the same.
- */
-export interface PlannerPersistence {
-  load(): PlannerState;
-  save(s: PlannerState): void;
-}
-
-const STORAGE_KEY = "planner:v1";
-
-function emptyState(): PlannerState {
-  return { entries: {}, variant: {} };
-}
-
-/** localStorage 기반 영구 저장 (RULES R8-3 임시 브리지). */
-export const localStoragePlannerPersistence: PlannerPersistence = {
-  load() {
-    if (typeof window === "undefined") return emptyState();
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (!raw) return emptyState();
-      const parsed = JSON.parse(raw) as Partial<PlannerState>;
-      return {
-        entries: parsed.entries ?? {},
-        variant: parsed.variant ?? {},
-      };
-    } catch {
-      return emptyState();
-    }
-  },
-  save(s) {
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
-    } catch {
-      // 저장 실패(쿼터 등)는 조용히 무시 — UI는 메모리 상태로 계속 동작.
-    }
-  },
-};
+const VARIANT_KEY = "planner-variant:v1";
 
 function variantKey(date: string, meal: MealType): string {
   return `${date}:${meal}`;
+}
+
+function loadVariant(): VariantMap {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(VARIANT_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw) as VariantMap;
+  } catch {
+    return {};
+  }
+}
+
+function saveVariant(v: VariantMap): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(VARIANT_KEY, JSON.stringify(v));
+  } catch {
+    // 저장 실패(쿼터 등)는 조용히 무시.
+  }
 }
 
 export interface PlannerContextValue {
@@ -91,6 +80,8 @@ export interface PlannerContextValue {
   getVariant(date: string, meal: MealType): number;
   /** 확정된 끼니 총 개수. */
   confirmedCount: number;
+  /** 엔트리 로딩 중 여부 (소비자는 무시해도 됨). */
+  loading: boolean;
   /** 메뉴 확정 → 즉시 영구 저장 (upsert) — RULES R8-3. */
   selectMenu(date: string, meal: MealType, menu: SeedMenu): void;
   /** 확정 해제 (변경) — 엔트리 삭제. */
@@ -101,85 +92,162 @@ export interface PlannerContextValue {
 
 const PlannerContext = createContext<PlannerContextValue | null>(null);
 
-interface PlannerProviderProps {
-  children: ReactNode;
-  /** 테스트/스토리북 등에서 어댑터 주입 가능. 기본은 localStorage. */
-  persistence?: PlannerPersistence;
-}
+export function PlannerProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
+  const [entries, setEntries] = useState<Record<string, DayEntries>>({});
+  const [variant, setVariant] = useState<VariantMap>(() => loadVariant());
+  const [loading, setLoading] = useState(false);
 
-export function PlannerProvider({
-  children,
-  persistence = localStoragePlannerPersistence,
-}: PlannerProviderProps) {
-  const [state, setState] = useState<PlannerState>(() => persistence.load());
-
-  // 모든 변경마다 저장 (RULES R8-3: 화면 이동·새로고침에도 유지).
+  // 롤백용 최신 엔트리 스냅샷 (비동기 쓰기 실패 시 복구).
+  const entriesRef = useRef(entries);
   useEffect(() => {
-    persistence.save(state);
-  }, [state, persistence]);
+    entriesRef.current = entries;
+  }, [entries]);
+
+  // 사용자 변경 시 meal_entries 전체 로드. 비로그인 → 빈 상태.
+  useEffect(() => {
+    if (!user) {
+      setEntries({});
+      setLoading(false);
+      return;
+    }
+    let mounted = true;
+    setLoading(true);
+    supabase
+      .from("meal_entries")
+      .select("entry_date, meal, menu_id, cuisine, menu")
+      .eq("user_id", user.id)
+      .then(({ data, error }) => {
+        if (!mounted) return;
+        if (error) {
+          console.error("[planner] load failed", error.message);
+          setEntries({});
+          setLoading(false);
+          return;
+        }
+        const next: Record<string, DayEntries> = {};
+        for (const row of (data ?? []) as MealEntryRow[]) {
+          const day = next[row.entry_date] ?? {};
+          day[row.meal] = {
+            menuId: row.menu_id,
+            cuisine: row.cuisine,
+            menu: row.menu,
+          };
+          next[row.entry_date] = day;
+        }
+        setEntries(next);
+        setLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [user]);
+
+  // variant는 기기별 UI 상태 — localStorage에만 유지.
+  useEffect(() => {
+    saveVariant(variant);
+  }, [variant]);
 
   const selectMenu = useCallback(
     (date: string, meal: MealType, menu: SeedMenu) => {
-      setState((prev) => {
-        const day = prev.entries[date] ?? {};
-        return {
-          ...prev,
-          entries: {
-            ...prev.entries,
-            [date]: {
-              ...day,
-              [meal]: { menuId: menu.id, cuisine: menu.cuisine, menu },
-            },
+      if (!user) return;
+      const prevDay = entriesRef.current[date];
+      const entry: Entry = {
+        menuId: menu.id,
+        cuisine: menu.cuisine,
+        menu,
+      };
+      // 낙관적 업데이트.
+      setEntries((prev) => ({
+        ...prev,
+        [date]: { ...(prev[date] ?? {}), [meal]: entry },
+      }));
+
+      void supabase
+        .from("meal_entries")
+        .upsert(
+          {
+            user_id: user.id,
+            entry_date: date,
+            meal,
+            menu_id: menu.id,
+            cuisine: menu.cuisine,
+            menu,
+            servings: null,
           },
-        };
-      });
+          { onConflict: "user_id,entry_date,meal" },
+        )
+        .then(({ error }) => {
+          if (!error) return;
+          console.error("[planner] upsert failed, rolling back", error.message);
+          // 롤백: 이전 day 상태로 복구.
+          setEntries((prev) => {
+            const next = { ...prev };
+            if (prevDay) next[date] = prevDay;
+            else delete next[date];
+            return next;
+          });
+        });
     },
-    [],
+    [user],
   );
 
-  const clearSelection = useCallback((date: string, meal: MealType) => {
-    setState((prev) => {
-      const day = prev.entries[date];
-      if (!day || !day[meal]) return prev;
-      const nextDay: DayEntries = { ...day };
-      delete nextDay[meal];
-      const nextEntries = { ...prev.entries };
-      if (nextDay.lunch || nextDay.dinner) nextEntries[date] = nextDay;
-      else delete nextEntries[date];
-      return { ...prev, entries: nextEntries };
-    });
-  }, []);
+  const clearSelection = useCallback(
+    (date: string, meal: MealType) => {
+      if (!user) return;
+      const prevDay = entriesRef.current[date];
+      if (!prevDay || !prevDay[meal]) return;
+      // 낙관적 삭제.
+      setEntries((prev) => {
+        const day = prev[date];
+        if (!day) return prev;
+        const nextDay: DayEntries = { ...day };
+        delete nextDay[meal];
+        const next = { ...prev };
+        if (nextDay.lunch || nextDay.dinner) next[date] = nextDay;
+        else delete next[date];
+        return next;
+      });
+
+      void supabase
+        .from("meal_entries")
+        .delete()
+        .match({ user_id: user.id, entry_date: date, meal })
+        .then(({ error }) => {
+          if (!error) return;
+          console.error("[planner] delete failed, rolling back", error.message);
+          setEntries((prev) => ({ ...prev, [date]: prevDay }));
+        });
+    },
+    [user],
+  );
 
   const refreshSlot = useCallback((date: string, meal: MealType) => {
-    setState((prev) => {
-      const key = variantKey(date, meal);
-      return {
-        ...prev,
-        variant: { ...prev.variant, [key]: (prev.variant[key] ?? 0) + 1 },
-      };
-    });
+    const key = variantKey(date, meal);
+    setVariant((prev) => ({ ...prev, [key]: (prev[key] ?? 0) + 1 }));
   }, []);
 
   const confirmedCount = useMemo(() => {
     let n = 0;
-    for (const day of Object.values(state.entries)) {
+    for (const day of Object.values(entries)) {
       if (day.lunch) n++;
       if (day.dinner) n++;
     }
     return n;
-  }, [state.entries]);
+  }, [entries]);
 
   const value = useMemo<PlannerContextValue>(
     () => ({
-      entries: state.entries,
-      getEntry: (date, meal) => state.entries[date]?.[meal],
-      getVariant: (date, meal) => state.variant[variantKey(date, meal)] ?? 0,
+      entries,
+      getEntry: (date, meal) => entries[date]?.[meal],
+      getVariant: (date, meal) => variant[variantKey(date, meal)] ?? 0,
       confirmedCount,
+      loading,
       selectMenu,
       clearSelection,
       refreshSlot,
     }),
-    [state, confirmedCount, selectMenu, clearSelection, refreshSlot],
+    [entries, variant, confirmedCount, loading, selectMenu, clearSelection, refreshSlot],
   );
 
   return (
