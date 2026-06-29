@@ -43,7 +43,8 @@ function jsonResponse(
 }
 function handleOptions(req: Request): Response | null {
   if (req.method === "OPTIONS") {
-    return new Response("ok", { status: 204, headers: corsHeaders });
+    // 204(No Content)는 본문을 가질 수 없다 → body는 반드시 null.
+    return new Response(null, { status: 204, headers: corsHeaders });
   }
   return null;
 }

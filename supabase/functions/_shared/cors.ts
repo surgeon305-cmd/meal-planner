@@ -31,7 +31,8 @@ export function jsonResponse(
  */
 export function handleOptions(req: Request): Response | null {
   if (req.method === "OPTIONS") {
-    return new Response("ok", { status: 204, headers: corsHeaders });
+    // 204는 본문을 가질 수 없다 → body는 null이어야 한다.
+    return new Response(null, { status: 204, headers: corsHeaders });
   }
   return null;
 }
