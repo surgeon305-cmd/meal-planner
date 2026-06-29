@@ -28,6 +28,17 @@ export interface GenerateMenusRequest {
   isRefresh: boolean;
 }
 
+/** Single-menu request shape (search & add) — RULES R2/R6. */
+export interface GenerateSingleRequest {
+  mode: "single";
+  /** The dish the user typed (Korean). */
+  requestedName: string;
+  /** "lunch" | "dinner" — RULES R0. */
+  meal: "lunch" | "dinner";
+  /** Optional cuisine nudge (KR/CN/JP/WS/DINEOUT or free text). */
+  cuisineHint?: string;
+}
+
 const MEAL_LABEL: Record<string, string> = {
   lunch: "점심",
   dinner: "저녁",
@@ -136,5 +147,55 @@ export function buildUserPrompt(req: GenerateMenusRequest): string {
     "위 제약을 모두 지켜 정확히 5개의 메뉴 선지를 JSON 배열로만 출력한다 (집밥 4 + 외식 1).",
   );
 
+  return lines.join("\n");
+}
+
+/**
+ * System prompt for SINGLE-menu mode (search & add).
+ * Output is ONLY one JSON object (no array, no prose, no code fences),
+ * conforming to RULES R2.
+ */
+export function buildSingleSystemPrompt(): string {
+  return [
+    "당신은 한국 가정 식단을 위한 메뉴 데이터 생성기다.",
+    "사용자가 입력한 **하나의 메뉴**에 대해, RULES R2 스키마를 따르는 **메뉴 객체 1개**를 생성한다.",
+    "",
+    "## 출력 계약 (RULES R2)",
+    "오직 **JSON 객체 1개만** 출력한다. 배열 금지, 설명 문장 금지, 코드펜스(```) 금지, 머리말 금지.",
+    "",
+    "집을 만들어 먹는 요리면 type:\"home\":",
+    '{ "name", "cuisine"(KR|CN|JP|WS), "type":"home", "description", "difficulty"(easy|medium|hard),',
+    '  "cookTimeMin"(number), "servings"(number), "estimatedCalories"(1인분 기준 number), "tags"(string[]),',
+    '  "recipe": { "steps"(string[]), "tips"(string[]) },',
+    '  "ingredients": [ { "name", "quantity"(number), "unit", "category", "pantryStaple"(boolean) } ] }',
+    "",
+    "주로 사 먹는(외식) 메뉴면 type:\"dineout\" (레시피/재료 없음):",
+    '{ "name", "cuisine":"DINEOUT", "type":"dineout", "description", "tags"(string[]), "searchKeyword" }',
+    "",
+    "규칙:",
+    "- 집밥의 cuisine 은 KR|CN|JP|WS 중 하나(절대 DINEOUT 아님), 외식의 cuisine 은 반드시 DINEOUT.",
+    "- 모든 텍스트(이름·설명·레시피·재료명)는 **한국어**.",
+    "- 단위(unit): g, kg, ml, L, 개, 장, 쪽, 대, 컵, 큰술, 작은술, 약간.",
+    "- 카테고리(category): vegetable, fruit, meat, seafood, dairy, grain, seasoning, etc.",
+    "- 소금·설탕·간장·식용유·후추·다진마늘 등 기본 양념은 pantryStaple:true.",
+    "- id 필드는 비워도 된다(백엔드가 부여).",
+  ].join("\n");
+}
+
+/** User prompt for SINGLE-menu mode — encodes the requested name + context. */
+export function buildSingleUserPrompt(req: GenerateSingleRequest): string {
+  const mealLabel = MEAL_LABEL[req.meal] ?? req.meal;
+  const lines: string[] = [
+    `사용자가 요청한 메뉴 이름: "${req.requestedName}".`,
+    `끼니: ${mealLabel}.`,
+    "이 메뉴와 가장 잘 맞는 **메뉴 객체 1개**를 생성한다. name 은 요청한 이름을 최대한 그대로 사용한다.",
+    "집에서 조리하는 요리면 type:\"home\"(레시피+재료 포함), 주로 사 먹는 메뉴면 type:\"dineout\".",
+  ];
+  if (req.cuisineHint) {
+    lines.push(
+      `요리종류 힌트: ${req.cuisineHint} (적절하면 반영, 메뉴와 맞지 않으면 무시).`,
+    );
+  }
+  lines.push("RULES R2 스키마를 지켜 JSON 객체 1개만 출력한다.");
   return lines.join("\n");
 }

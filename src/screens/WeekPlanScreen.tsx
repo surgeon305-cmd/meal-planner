@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import AppHeader from "../components/AppHeader";
 import ScreenShell from "../components/ScreenShell";
 import MenuOptionCard from "../components/MenuOptionCard";
+import MenuSearchModal from "../components/MenuSearchModal";
 import CuisineChip from "../components/CuisineChip";
 import CalendarMonth from "../components/CalendarMonth";
 import { buildSlotOptions } from "../lib/recommend";
@@ -70,6 +71,7 @@ function SlotCard({ date, meal }: SlotCardProps) {
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<SeedMenu | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   const excludedCuisines = cooldownCuisines(entries, date, meal);
   const options = buildSlotOptions({ excludedCuisines, variant });
@@ -141,7 +143,9 @@ function SlotCard({ date, meal }: SlotCardProps) {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => navigate(`/menu/${entry.menuId}`)}
+              onClick={() =>
+                navigate(`/menu/${entry.menuId}`, { state: { menu: entry.menu } })
+              }
               className="flex-1 rounded-lg border border-gray-200 bg-white py-2 text-xs font-semibold text-blue-600 hover:bg-gray-50"
             >
               상세 보기
@@ -167,17 +171,42 @@ function SlotCard({ date, meal }: SlotCardProps) {
       {/* 선지 선택 + 확정 버튼 */}
       {showOptions && (
         <>
-          <div className="h-scroll -mx-1 flex snap-x snap-mandatory gap-2 overflow-x-auto px-1 pb-1">
+          {/* 가로 스크롤 힌트 (RULES R1 — 선지가 더 있음을 명확히) */}
+          <div className="mb-1 text-center text-[11px] font-medium text-gray-400">
+            ← 좌우로 넘겨보기 →
+          </div>
+          <div
+            className="-mx-1 flex snap-x snap-mandatory gap-2 overflow-x-auto px-1 pb-2"
+            style={{
+              scrollbarWidth: "thin",
+              WebkitOverflowScrolling: "touch",
+              overscrollBehaviorX: "contain",
+            }}
+          >
             {options.map((menu) => (
-              <div key={menu.id} className="w-44 shrink-0 snap-start">
+              <div key={menu.id} className="w-40 shrink-0 snap-start">
                 <MenuOptionCard
                   menu={menu}
                   selected={draft?.id === menu.id}
                   onSelect={() => setDraft(menu)}
-                  onDetail={() => navigate(`/menu/${menu.id}`)}
+                  onDetail={() =>
+                    navigate(`/menu/${menu.id}`, { state: { menu } })
+                  }
                 />
               </div>
             ))}
+
+            {/* ＋ 메뉴 검색 / 추가 어포던스 (선지 끝) */}
+            <div className="w-40 shrink-0 snap-start">
+              <button
+                type="button"
+                onClick={() => setSearchOpen(true)}
+                className="flex h-full min-h-[7rem] w-full flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-gray-300 bg-gray-50 p-3 text-gray-500 transition hover:border-gray-400 hover:bg-gray-100"
+              >
+                <span className="text-2xl leading-none">＋</span>
+                <span className="text-xs font-semibold">메뉴 검색</span>
+              </button>
+            </div>
           </div>
 
           <div className="mt-3 flex items-center gap-2">
@@ -204,6 +233,19 @@ function SlotCard({ date, meal }: SlotCardProps) {
             )}
           </div>
         </>
+      )}
+
+      {searchOpen && (
+        <MenuSearchModal
+          meal={meal}
+          onClose={() => setSearchOpen(false)}
+          onConfirm={(menu) => {
+            selectMenu(date, meal, menu);
+            setSearchOpen(false);
+            setEditing(false);
+            setDraft(null);
+          }}
+        />
       )}
     </div>
   );

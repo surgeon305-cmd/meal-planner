@@ -1,5 +1,7 @@
 import { seedPool } from "@shared/seed";
 import type { SeedMenu, Cuisine } from "@shared/types";
+import { getPreferences } from "./preferences";
+import type { PreferencesState } from "./preferences";
 
 /**
  * 시드 풀 기반 선지 추천 — RULES R1 / R9.
@@ -37,6 +39,34 @@ function seededShuffle<T>(arr: T[], seed: number): T[] {
   return a;
 }
 
+/**
+ * 취향 하드 필터 (RULES R3) — 차단 메뉴/알레르기/비선호 재료 완전 제외.
+ * - dislikedMenuIds 에 든 메뉴는 항상 제외.
+ * - 집밥은 재료명에 알레르기/비선호 재료가 포함(대소문자 무시 부분일치)되면 제외.
+ */
+function passesPrefFilter(menu: SeedMenu, prefs: PreferencesState): boolean {
+  if (prefs.dislikedMenuIds.includes(menu.id)) return false;
+  if (menu.type === "home") {
+    const blocked = [...prefs.allergies, ...prefs.dislikedIngredients]
+      .map((s) => s.trim().toLowerCase())
+      .filter((s) => s.length > 0);
+    if (blocked.length > 0) {
+      for (const ing of menu.ingredients) {
+        const name = ing.name.toLowerCase();
+        if (blocked.some((b) => name.includes(b))) return false;
+      }
+    }
+  }
+  return true;
+}
+
+/** 취향 가중치 점수 (cuisine + tags 합) — RULES R3 (부드러운 편향). */
+function prefScore(menu: SeedMenu, prefs: PreferencesState): number {
+  let score = prefs.cuisineWeights[menu.cuisine] ?? 0;
+  for (const t of menu.tags) score += prefs.tagWeights[t] ?? 0;
+  return score;
+}
+
 /** 같은 요리종류 ≤2 제약을 지키며 최대 n개 집밥 선택 (R1-3). */
 function pickHome(pool: SeedMenu[], n: number, perCuisineMax = 2): SeedMenu[] {
   const picked: SeedMenu[] = [];
@@ -65,19 +95,43 @@ export function buildSlotOptions(c: SlotConstraints = {}): SeedMenu[] {
   const excludedCuisines = new Set(c.excludedCuisines ?? []);
   const excludedIds = new Set(c.excludedIds ?? []);
   const variant = c.variant ?? 0;
+  const prefs = getPreferences();
 
   const homeAvail = seededShuffle(
     HOME_POOL.filter(
-      (m) => !excludedIds.has(m.id) && !excludedCuisines.has(m.cuisine),
+      (m) =>
+        !excludedIds.has(m.id) &&
+        !excludedCuisines.has(m.cuisine) &&
+        passesPrefFilter(m, prefs),
     ),
     variant + 1,
   );
   const dineoutAvail = seededShuffle(
-    DINEOUT_POOL.filter((m) => !excludedIds.has(m.id)),
+    DINEOUT_POOL.filter(
+      (m) => !excludedIds.has(m.id) && passesPrefFilter(m, prefs),
+    ),
     variant + 7,
   );
 
-  const home = pickHome(homeAvail, 4);
+  // 취향 가중치로 부드럽게 정렬하되, 탐색(wildcard) 1개는 남긴다 (RULES R1-6/R3).
+  // sort 는 안정 정렬이라 동점은 셔플 순서를 유지 → 다양성 보존.
+  const biased = [...homeAvail].sort(
+    (a, b) => prefScore(b, prefs) - prefScore(a, prefs),
+  );
+  const wildcard = homeAvail[0];
+  let homeOrdered: SeedMenu[];
+  if (wildcard) {
+    const head = biased.filter((m) => m.id !== wildcard.id).slice(0, 3);
+    const headIds = new Set(head.map((m) => m.id));
+    const tail = biased.filter(
+      (m) => m.id !== wildcard.id && !headIds.has(m.id),
+    );
+    homeOrdered = [...head, wildcard, ...tail];
+  } else {
+    homeOrdered = biased;
+  }
+
+  const home = pickHome(homeOrdered, 4);
   const dineout = dineoutAvail.slice(0, 1);
 
   let options = [...home, ...dineout];
@@ -86,7 +140,12 @@ export function buildSlotOptions(c: SlotConstraints = {}): SeedMenu[] {
   if (options.length < 5) {
     const used = new Set(options.map((m) => m.id));
     const fillers = seededShuffle(
-      seedPool.filter((m) => !used.has(m.id) && !excludedIds.has(m.id)),
+      seedPool.filter(
+        (m) =>
+          !used.has(m.id) &&
+          !excludedIds.has(m.id) &&
+          passesPrefFilter(m, prefs),
+      ),
       variant + 13,
     );
     for (const m of fillers) {

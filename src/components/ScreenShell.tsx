@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import BottomNav from "./BottomNav";
+import PlanSwitcher from "./PlanSwitcher";
 
 interface ScreenShellProps {
   children: ReactNode;
@@ -14,7 +15,10 @@ interface ScreenShellProps {
 export default function ScreenShell({ children, showNav = true }: ScreenShellProps) {
   return (
     <div className="min-h-full bg-gray-50 text-gray-900">
-      <div className={`mx-auto max-w-md ${showNav ? "pb-20" : ""}`}>{children}</div>
+      <div className={`mx-auto max-w-md ${showNav ? "pb-20" : ""}`}>
+        {showNav && <PlanSwitcher />}
+        {children}
+      </div>
       {showNav && <BottomNav />}
     </div>
   );

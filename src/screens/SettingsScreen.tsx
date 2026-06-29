@@ -1,13 +1,18 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import AppHeader from "../components/AppHeader";
 import ScreenShell from "../components/ScreenShell";
 import ChipInput from "../components/ChipInput";
 import { useAuth } from "../lib/auth";
+import {
+  usePreferences,
+  useServings,
+  setServings,
+  setAllergies,
+  setDislikedIngredients,
+  resetLearning,
+} from "../lib/preferences";
 
-// TODO(Phase 1): localStorage → preference_profiles (Supabase). 학습 초기화는 RPC 호출.
-
-const SERVINGS_KEY = "mp.servings";
 const SERVINGS_OPTIONS = [1, 2, 3, 4, 5, 6];
 
 export default function SettingsScreen() {
@@ -15,22 +20,13 @@ export default function SettingsScreen() {
   const { user, signOut } = useAuth();
 
   // RULES R5: 고정 기본 인분 없음. 마지막 선택값을 기억하되 강제 고정하지 않는다.
-  const [servings, setServings] = useState<number | null>(() => {
-    const saved =
-      typeof window !== "undefined" ? window.localStorage.getItem(SERVINGS_KEY) : null;
-    return saved ? Number(saved) : null;
-  });
-  const [allergies, setAllergies] = useState<string[]>([]);
-  const [disliked, setDisliked] = useState<string[]>([]);
+  const servings = useServings();
+  // RULES R3: 알레르기·비선호 재료·학습 가중치는 preferences 스토어가 단일 출처.
+  const prefs = usePreferences();
   const [resetDone, setResetDone] = useState(false);
 
-  useEffect(() => {
-    if (servings !== null) window.localStorage.setItem(SERVINGS_KEY, String(servings));
-  }, [servings]);
-
   const handleReset = () => {
-    setAllergies([]);
-    setDisliked([]);
+    resetLearning();
     setResetDone(true);
     window.setTimeout(() => setResetDone(false), 2000);
   };
@@ -79,7 +75,7 @@ export default function SettingsScreen() {
             추가한 재료는 추천에서 항상 제외돼요 (하드 필터).
           </p>
           <ChipInput
-            values={allergies}
+            values={prefs.allergies}
             onChange={setAllergies}
             placeholder="예: 갑각류, 땅콩"
           />
@@ -92,8 +88,8 @@ export default function SettingsScreen() {
             싫어하는 재료를 넣으면 메뉴 추천에서 빼드려요.
           </p>
           <ChipInput
-            values={disliked}
-            onChange={setDisliked}
+            values={prefs.dislikedIngredients}
+            onChange={setDislikedIngredients}
             placeholder="예: 오이, 고수"
           />
         </section>

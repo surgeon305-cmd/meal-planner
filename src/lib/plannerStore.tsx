@@ -19,6 +19,7 @@ import type { ReactNode } from "react";
 import type { Cuisine, MealType, SeedMenu } from "@shared/types";
 import { supabase } from "./supabaseClient";
 import { useAuth } from "./auth";
+import { useActivePlanId } from "./plans";
 
 /** 확정된 한 끼 (날짜+끼니에 저장되는 엔트리) — RULES R8-3. */
 export interface Entry {
@@ -94,6 +95,8 @@ const PlannerContext = createContext<PlannerContextValue | null>(null);
 
 export function PlannerProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
+  // 엔트리는 활성 plan에 속한다 — plan이 바뀌면 다시 로드한다 (공유 식단 지원).
+  const activePlanId = useActivePlanId();
   const [entries, setEntries] = useState<Record<string, DayEntries>>({});
   const [variant, setVariant] = useState<VariantMap>(() => loadVariant());
   const [loading, setLoading] = useState(false);
@@ -104,9 +107,10 @@ export function PlannerProvider({ children }: { children: ReactNode }) {
     entriesRef.current = entries;
   }, [entries]);
 
-  // 사용자 변경 시 meal_entries 전체 로드. 비로그인 → 빈 상태.
+  // 사용자/활성 plan 변경 시 해당 plan의 meal_entries 전체 로드.
+  // 비로그인 또는 활성 plan 없음 → 빈 상태.
   useEffect(() => {
-    if (!user) {
+    if (!user || !activePlanId) {
       setEntries({});
       setLoading(false);
       return;
@@ -116,7 +120,7 @@ export function PlannerProvider({ children }: { children: ReactNode }) {
     supabase
       .from("meal_entries")
       .select("entry_date, meal, menu_id, cuisine, menu")
-      .eq("user_id", user.id)
+      .eq("plan_id", activePlanId)
       .then(({ data, error }) => {
         if (!mounted) return;
         if (error) {
@@ -141,7 +145,7 @@ export function PlannerProvider({ children }: { children: ReactNode }) {
     return () => {
       mounted = false;
     };
-  }, [user]);
+  }, [user, activePlanId]);
 
   // variant는 기기별 UI 상태 — localStorage에만 유지.
   useEffect(() => {
@@ -150,7 +154,7 @@ export function PlannerProvider({ children }: { children: ReactNode }) {
 
   const selectMenu = useCallback(
     (date: string, meal: MealType, menu: SeedMenu) => {
-      if (!user) return;
+      if (!user || !activePlanId) return;
       const prevDay = entriesRef.current[date];
       const entry: Entry = {
         menuId: menu.id,
@@ -167,6 +171,7 @@ export function PlannerProvider({ children }: { children: ReactNode }) {
         .from("meal_entries")
         .upsert(
           {
+            plan_id: activePlanId,
             user_id: user.id,
             entry_date: date,
             meal,
@@ -175,7 +180,7 @@ export function PlannerProvider({ children }: { children: ReactNode }) {
             menu,
             servings: null,
           },
-          { onConflict: "user_id,entry_date,meal" },
+          { onConflict: "plan_id,entry_date,meal" },
         )
         .then(({ error }) => {
           if (!error) return;
@@ -189,12 +194,12 @@ export function PlannerProvider({ children }: { children: ReactNode }) {
           });
         });
     },
-    [user],
+    [user, activePlanId],
   );
 
   const clearSelection = useCallback(
     (date: string, meal: MealType) => {
-      if (!user) return;
+      if (!user || !activePlanId) return;
       const prevDay = entriesRef.current[date];
       if (!prevDay || !prevDay[meal]) return;
       // 낙관적 삭제.
@@ -212,14 +217,14 @@ export function PlannerProvider({ children }: { children: ReactNode }) {
       void supabase
         .from("meal_entries")
         .delete()
-        .match({ user_id: user.id, entry_date: date, meal })
+        .match({ plan_id: activePlanId, entry_date: date, meal })
         .then(({ error }) => {
           if (!error) return;
           console.error("[planner] delete failed, rolling back", error.message);
           setEntries((prev) => ({ ...prev, [date]: prevDay }));
         });
     },
-    [user],
+    [user, activePlanId],
   );
 
   const refreshSlot = useCallback((date: string, meal: MealType) => {

@@ -4,6 +4,7 @@ import ScreenShell from "../components/ScreenShell";
 import { usePlanner } from "../lib/plannerStore";
 import { aggregateIngredients } from "../lib/aggregate";
 import type { CartItem } from "../lib/aggregate";
+import { useServings } from "../lib/preferences";
 import { CATEGORY_LABELS, CATEGORY_ORDER } from "../lib/uiConstants";
 import { buildShoppingLinks } from "../lib/searchLinks";
 import { upcomingDates } from "../lib/dates";
@@ -78,8 +79,9 @@ function ItemRow({ item, checked, onToggle }: ItemRowProps) {
 
 export default function ShoppingListScreen() {
   const { entries } = usePlanner();
+  const servings = useServings();
 
-  // 화면 범위(오늘+13일)의 확정 메뉴 재료를 합산.
+  // 화면 범위(오늘+13일)의 확정 메뉴 재료를 선택 인분 수로 스케일해 합산 (R4/R5).
   const items = useMemo(() => {
     const menus: SeedMenu[] = [];
     for (const date of upcomingDates(HORIZON_DAYS)) {
@@ -88,8 +90,8 @@ export default function ShoppingListScreen() {
       if (day.lunch) menus.push(day.lunch.menu);
       if (day.dinner) menus.push(day.dinner.menu);
     }
-    return aggregateIngredients(menus);
-  }, [entries]);
+    return aggregateIngredients(menus, servings);
+  }, [entries, servings]);
 
   const [checked, setChecked] = useState<Record<string, boolean>>(loadChecks);
   const [pantryOpen, setPantryOpen] = useState(false);
@@ -135,7 +137,7 @@ export default function ShoppingListScreen() {
     <ScreenShell>
       <AppHeader
         title="장바구니"
-        subtitle={`확정 메뉴 재료 합산 · ${checkedCount}/${totalCount} 담음`}
+        subtitle={`${servings != null ? `${servings}인분 기준 · ` : ""}확정 메뉴 재료 합산 · ${checkedCount}/${totalCount} 담음`}
       />
 
       <div className="space-y-4 px-4 py-4">

@@ -1,31 +1,87 @@
 import { useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useLocation, useParams } from "react-router-dom";
 import AppHeader from "../components/AppHeader";
 import ScreenShell from "../components/ScreenShell";
 import CuisineChip from "../components/CuisineChip";
 import { seedPool } from "@shared/seed";
 import { isHomeMenu } from "../lib/viewTypes";
-import type { Ingredient, IngredientCategory } from "../lib/viewTypes";
+import type { Ingredient, IngredientCategory, SeedMenu } from "../lib/viewTypes";
 import {
   CATEGORY_LABELS,
   CATEGORY_ORDER,
   DIFFICULTY_LABELS,
 } from "../lib/uiConstants";
 import { buildDineoutLinks } from "../lib/searchLinks";
-
-// TODO(Phase 1): seedPool 조회 → useMenu(menuId) (생성 메뉴 포함). 좋아요/싫어요는 selection_events 기록.
+import { usePlanner } from "../lib/plannerStore";
+import {
+  usePreferences,
+  useServings,
+  likeMenu,
+  dislikeMenu,
+  clearFeedback,
+} from "../lib/preferences";
 
 type Feedback = "like" | "dislike" | null;
 
-function formatQty(ing: Ingredient): string {
+/** 인분 수에 맞춰 재료 수량을 스케일해 표기 (RULES R5). `약간`·기본양념은 제외. */
+function formatQty(ing: Ingredient, factor: number): string {
   if (ing.unit === "약간") return "약간";
-  return `${ing.quantity}${ing.unit}`;
+  const qty = ing.pantryStaple
+    ? ing.quantity
+    : Math.round(ing.quantity * factor * 10) / 10;
+  return `${qty}${ing.unit}`;
 }
 
 export default function MenuDetailScreen() {
   const { menuId } = useParams<{ menuId: string }>();
-  const menu = menuId ? seedPool.find((m) => m.id === menuId) : undefined;
-  const [feedback, setFeedback] = useState<Feedback>(null);
+  const location = useLocation();
+  const { entries } = usePlanner();
+  const servings = useServings();
+  const prefs = usePreferences();
+  const [liked, setLiked] = useState(false);
+
+  // 메뉴 해석: 1) 시드 풀 id, 2) 라우트 state.menu, 3) 확정 엔트리 중 id 일치.
+  const menu = useMemo<SeedMenu | undefined>(() => {
+    if (!menuId) return undefined;
+    const fromSeed = seedPool.find((m) => m.id === menuId);
+    if (fromSeed) return fromSeed;
+    const fromState = (location.state as { menu?: SeedMenu } | null)?.menu;
+    if (fromState) return fromState;
+    for (const day of Object.values(entries)) {
+      if (day.lunch?.menu.id === menuId) return day.lunch.menu;
+      if (day.dinner?.menu.id === menuId) return day.dinner.menu;
+    }
+    return undefined;
+  }, [menuId, location.state, entries]);
+
+  const isDisliked = menu ? prefs.dislikedMenuIds.includes(menu.id) : false;
+  const feedback: Feedback = isDisliked ? "dislike" : liked ? "like" : null;
+
+  // 표시 기준 인분 수: 선택값 우선, 없으면 메뉴 기본값. 스케일 배수 계산.
+  const baseServings = menu && isHomeMenu(menu) ? menu.servings : 2;
+  const displayServings = servings ?? baseServings;
+  const scaleFactor = baseServings > 0 ? displayServings / baseServings : 1;
+
+  const onLike = () => {
+    if (!menu) return;
+    if (feedback === "like") {
+      setLiked(false);
+      clearFeedback(menu.id);
+      return;
+    }
+    likeMenu(menu);
+    setLiked(true);
+  };
+
+  const onDislike = () => {
+    if (!menu) return;
+    if (feedback === "dislike") {
+      clearFeedback(menu.id);
+      return;
+    }
+    dislikeMenu(menu);
+    setLiked(false);
+  };
 
   // 집밥 메뉴 재료를 카테고리별로 그룹화 (RULES R4 순서).
   const groupedIngredients = useMemo(() => {
@@ -124,7 +180,12 @@ export default function MenuDetailScreen() {
 
             {/* 재료 (카테고리별) */}
             <section>
-              <h3 className="mb-2 text-sm font-bold text-gray-900">재료</h3>
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="text-sm font-bold text-gray-900">재료</h3>
+                <span className="text-xs text-gray-400">
+                  {displayServings}인분 기준
+                </span>
+              </div>
               <div className="space-y-3">
                 {groupedIngredients.map((group) => (
                   <div
@@ -148,7 +209,9 @@ export default function MenuDetailScreen() {
                               </span>
                             )}
                           </span>
-                          <span className="text-gray-500">{formatQty(ing)}</span>
+                          <span className="text-gray-500">
+                            {formatQty(ing, scaleFactor)}
+                          </span>
                         </li>
                       ))}
                     </ul>
@@ -190,7 +253,7 @@ export default function MenuDetailScreen() {
         <section className="flex gap-3">
           <button
             type="button"
-            onClick={() => setFeedback((f) => (f === "like" ? null : "like"))}
+            onClick={onLike}
             className={`flex-1 rounded-xl border py-3 text-sm font-semibold transition ${
               feedback === "like"
                 ? "border-green-500 bg-green-50 text-green-700"
@@ -201,7 +264,7 @@ export default function MenuDetailScreen() {
           </button>
           <button
             type="button"
-            onClick={() => setFeedback((f) => (f === "dislike" ? null : "dislike"))}
+            onClick={onDislike}
             className={`flex-1 rounded-xl border py-3 text-sm font-semibold transition ${
               feedback === "dislike"
                 ? "border-red-500 bg-red-50 text-red-700"

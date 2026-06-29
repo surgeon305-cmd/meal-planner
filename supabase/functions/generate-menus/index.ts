@@ -13,9 +13,12 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders, handleOptions, jsonResponse } from "../_shared/cors.ts";
 import {
+  buildSingleSystemPrompt,
+  buildSingleUserPrompt,
   buildSystemPrompt,
   buildUserPrompt,
   type GenerateMenusRequest,
+  type GenerateSingleRequest,
 } from "./prompt.ts";
 
 // --- Constants (RULES R0/R2/R6) ---------------------------------------------
@@ -179,7 +182,7 @@ async function callClaude(
   apiKey: string,
   systemPrompt: string,
   userPrompt: string,
-): Promise<unknown[]> {
+): Promise<unknown> {
   const res = await fetch(ANTHROPIC_URL, {
     method: "POST",
     headers: {
@@ -260,6 +263,91 @@ async function generateValidated(
   );
 }
 
+// --- Single-menu mode (search & add) ----------------------------------------
+function isSingleMode(body: unknown): boolean {
+  return (
+    typeof body === "object" && body !== null &&
+    (body as Record<string, unknown>).mode === "single"
+  );
+}
+
+function parseSingleRequest(body: unknown): GenerateSingleRequest {
+  const b = body as Record<string, unknown>;
+  if (!nonEmptyString(b.requestedName)) {
+    throw new ValidationError("requestedName must be a non-empty string");
+  }
+  if (b.meal !== "lunch" && b.meal !== "dinner") {
+    throw new ValidationError('meal must be "lunch" or "dinner"');
+  }
+  return {
+    mode: "single",
+    requestedName: b.requestedName as string,
+    meal: b.meal,
+    cuisineHint: typeof b.cuisineHint === "string" ? b.cuisineHint : undefined,
+  };
+}
+
+/** Generate + validate ONE menu object with one retry (RULES R6-3). */
+async function generateSingleValidated(
+  apiKey: string,
+  req: GenerateSingleRequest,
+): Promise<unknown> {
+  const systemPrompt = buildSingleSystemPrompt();
+  const userPrompt = buildSingleUserPrompt(req);
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const menu = await callClaude(apiKey, systemPrompt, userPrompt);
+      if (isValidMenuOption(menu)) return menu;
+      console.warn(
+        `generate-menus(single): validation failed (attempt ${attempt + 1}/2)`,
+      );
+    } catch (err) {
+      console.warn(
+        `generate-menus(single): Claude attempt ${attempt + 1}/2 failed:`,
+        err instanceof Error ? err.message : err,
+      );
+      if (attempt === 1) {
+        throw err instanceof UpstreamError
+          ? err
+          : new UpstreamError(
+            err instanceof Error ? err.message : "Claude call failed",
+          );
+      }
+    }
+  }
+
+  throw new UpstreamError(
+    "Single menu output failed R2 validation twice (1 retry exhausted)",
+  );
+}
+
+async function handleSingle(body: unknown, apiKey: string): Promise<Response> {
+  let parsed: GenerateSingleRequest;
+  try {
+    parsed = parseSingleRequest(body);
+  } catch (err) {
+    return jsonResponse(
+      { error: err instanceof ValidationError ? err.message : "Invalid request" },
+      400,
+    );
+  }
+
+  try {
+    const menu = await generateSingleValidated(apiKey, parsed);
+    return jsonResponse({ menu });
+  } catch (err) {
+    console.error(
+      "generate-menus(single): generation failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return jsonResponse(
+      { error: "Failed to generate valid menu", detail: String(err) },
+      502,
+    );
+  }
+}
+
 // --- Typed errors ------------------------------------------------------------
 class ValidationError extends Error {}
 class UpstreamError extends Error {}
@@ -273,19 +361,37 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return jsonResponse({ error: "Method not allowed" }, 405);
   }
 
-  // Required server-side secrets (RULES R6-1).
+  // Claude key is required by both modes (RULES R6-1).
   const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
+  if (!anthropicKey) {
+    console.error("generate-menus: missing ANTHROPIC_API_KEY");
+    return jsonResponse({ error: "Server is not configured" }, 500);
+  }
+
+  // Read the body once (used by both modes).
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return jsonResponse({ error: "Invalid JSON body" }, 400);
+  }
+
+  // Single-menu mode (search & add) — no cache, only needs the Claude key.
+  if (isSingleMode(body)) {
+    return await handleSingle(body, anthropicKey);
+  }
+
+  // 5-option mode also needs the cache (Supabase) secrets.
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!anthropicKey || !supabaseUrl || !serviceRoleKey) {
-    console.error("generate-menus: missing required environment secrets");
+  if (!supabaseUrl || !serviceRoleKey) {
+    console.error("generate-menus: missing Supabase environment secrets");
     return jsonResponse({ error: "Server is not configured" }, 500);
   }
 
   // Parse + validate the request.
   let parsed: GenerateMenusRequest;
   try {
-    const body = await req.json();
     parsed = parseRequest(body);
   } catch (err) {
     const message = err instanceof ValidationError
