@@ -71,36 +71,46 @@ export default function CalendarMonth({
           const selected = date === selectedDate;
           const day = entries[date];
           const dayNum = Number(date.slice(8, 10));
+          const hasConfirm = Boolean(day?.lunch || day?.dinner);
+          const bothConfirm = Boolean(day?.lunch && day?.dinner);
+          const onDark = selected || bothConfirm;
+
+          // 확정 날짜 = 초록색 (둘 다 진한 초록 / 하나는 연한 초록). 선택은 검정 우선.
+          const colorClass = selected
+            ? "bg-gray-900 text-white"
+            : bothConfirm
+              ? "bg-green-500 text-white"
+              : hasConfirm
+                ? "bg-green-100 font-semibold text-green-800"
+                : today
+                  ? "bg-gray-100 font-bold text-gray-900"
+                  : inMonth
+                    ? "text-gray-800 hover:bg-gray-100"
+                    : "text-gray-300 hover:bg-gray-50";
 
           return (
             <button
               key={date}
               type="button"
               onClick={() => onPickDate(date)}
-              className={`flex aspect-square flex-col items-center justify-center rounded-xl text-sm transition-colors ${
-                selected
-                  ? "bg-gray-900 text-white"
-                  : today
-                    ? "bg-gray-100 font-bold text-gray-900"
-                    : inMonth
-                      ? "text-gray-800 hover:bg-gray-100"
-                      : "text-gray-300 hover:bg-gray-50"
+              className={`flex aspect-square flex-col items-center justify-center rounded-xl text-sm transition-colors ${colorClass} ${
+                today && !selected ? "ring-2 ring-gray-900" : ""
               }`}
             >
               <span>{dayNum}</span>
-              {/* 확정 표시: 점심/저녁 점 */}
+              {/* 점심/저녁 점 표시 */}
               <span className="mt-0.5 flex h-1.5 items-center gap-0.5">
                 {day?.lunch && (
                   <span
                     className={`h-1.5 w-1.5 rounded-full ${
-                      selected ? "bg-white" : "bg-green-500"
+                      onDark ? "bg-white" : "bg-green-600"
                     }`}
                   />
                 )}
                 {day?.dinner && (
                   <span
                     className={`h-1.5 w-1.5 rounded-full ${
-                      selected ? "bg-white/70" : "bg-amber-500"
+                      onDark ? "bg-white/70" : "bg-amber-500"
                     }`}
                   />
                 )}

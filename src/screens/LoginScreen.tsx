@@ -11,7 +11,7 @@ type Mode = "signin" | "signup";
  */
 export default function LoginScreen() {
   const navigate = useNavigate();
-  const { signIn, signUp } = useAuth();
+  const { signIn, signUp, signInWithGoogle } = useAuth();
 
   const [mode, setMode] = useState<Mode>("signin");
   const [email, setEmail] = useState("");
@@ -134,15 +134,21 @@ export default function LoginScreen() {
 
         <button
           type="button"
-          disabled
-          className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white py-2.5 text-sm font-semibold text-gray-400"
+          onClick={async () => {
+            setError(null);
+            const { error: oauthError } = await signInWithGoogle();
+            if (oauthError) {
+              setError(
+                "구글 로그인을 시작할 수 없어요. 잠시 후 다시 시도해 주세요.",
+              );
+            }
+            // 성공 시 구글 동의 화면으로 리다이렉트된다.
+          }}
+          className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-300 bg-white py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50"
         >
-          <span className="text-base">G</span>
+          <span className="text-base font-bold text-[#4285F4]">G</span>
           구글로 계속하기
         </button>
-        <p className="mt-1.5 text-center text-xs text-gray-400">
-          구글 로그인은 준비 중이에요.
-        </p>
 
         <p className="mt-6 text-center text-xs text-gray-400">
           계속 진행하면 서비스 약관에 동의하는 것으로 간주됩니다.

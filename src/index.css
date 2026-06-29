@@ -18,3 +18,13 @@ body {
     "Noto Sans KR", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
+
+/* 모바일 터치 가로 스크롤: 관성 스크롤 + 스크롤바 숨김 */
+.h-scroll {
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+}
+.h-scroll::-webkit-scrollbar {
+  display: none;
+}

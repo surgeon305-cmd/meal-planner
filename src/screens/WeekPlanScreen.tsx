@@ -167,9 +167,9 @@ function SlotCard({ date, meal }: SlotCardProps) {
       {/* 선지 선택 + 확정 버튼 */}
       {showOptions && (
         <>
-          <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
+          <div className="h-scroll -mx-1 flex snap-x snap-mandatory gap-2 overflow-x-auto px-1 pb-1">
             {options.map((menu) => (
-              <div key={menu.id} className="w-44 shrink-0">
+              <div key={menu.id} className="w-44 shrink-0 snap-start">
                 <MenuOptionCard
                   menu={menu}
                   selected={draft?.id === menu.id}

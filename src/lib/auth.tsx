@@ -25,6 +25,8 @@ export interface AuthContextValue {
   loading: boolean;
   signUp(email: string, password: string): Promise<AuthResult>;
   signIn(email: string, password: string): Promise<AuthResult>;
+  /** 구글 OAuth 로그인 — 구글 동의 화면으로 리다이렉트된다. */
+  signInWithGoogle(): Promise<AuthResult>;
   signOut(): Promise<AuthResult>;
 }
 
@@ -80,6 +82,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const signInWithGoogle = useCallback(async (): Promise<AuthResult> => {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: window.location.origin },
+    });
+    return { error: error?.message ?? null };
+  }, []);
+
   const signOut = useCallback(async (): Promise<AuthResult> => {
     const { error } = await supabase.auth.signOut();
     return { error: error?.message ?? null };
@@ -92,9 +102,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loading,
       signUp,
       signIn,
+      signInWithGoogle,
       signOut,
     }),
-    [session, loading, signUp, signIn, signOut],
+    [session, loading, signUp, signIn, signInWithGoogle, signOut],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
