@@ -118,13 +118,22 @@ function SlotCard({ date, meal }: SlotCardProps) {
           )}
         </div>
         {showOptions && (
-          <button
-            type="button"
-            onClick={refresh}
-            className="rounded-md border border-gray-200 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50"
-          >
-            ↻ 갱신
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setSearchOpen(true)}
+              className="rounded-md border border-gray-200 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50"
+            >
+              ☰ 전체 보기
+            </button>
+            <button
+              type="button"
+              onClick={refresh}
+              className="rounded-md border border-gray-200 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50"
+            >
+              ↻ 갱신
+            </button>
+          </div>
         )}
       </div>
 

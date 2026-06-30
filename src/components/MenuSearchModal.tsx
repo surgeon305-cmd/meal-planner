@@ -1,20 +1,20 @@
 // =============================================================================
-// MenuSearchModal — "메뉴 검색 & 추가" (search the seed pool, or AI-generate).
+// MenuSearchModal — "메뉴 고르기" (전체 보기 + 탭 + 검색 + AI 추가).
 // -----------------------------------------------------------------------------
-// 1) Fuzzy-searches the seed pool (RULES R9) by name/tags as the user types.
-//    Selecting a result confirms it into the slot (caller's onConfirm).
-// 2) When nothing matches (or the user wants something new), offers AI
-//    generation via aiMenus.generateOneMenu (RULES R6) — single-menu mode.
+// 1) 상단 탭(전체/한·중·일·양/외식)으로 시드 풀(RULES R9)을 훑어 직접 고른다.
+// 2) 검색창에 입력하면 이름/태그로 퍼지 검색(선택한 탭 범위 안에서).
+// 3) 맘에 드는 게 없으면 AI 추가 생성(RULES R6) — single 모드.
 //
-// The seed search works WITHOUT the Edge Function deployed; only "추가 생성"
-// needs it, and it degrades gracefully (friendly error) when it errors.
+// 시드 보기/검색은 Edge Function 없이도 동작. "추가 생성"만 함수가 필요하며
+// 실패 시 친절한 에러로 우아하게 처리한다.
 // =============================================================================
 import { useMemo, useState } from "react";
 import { seedPool } from "@shared/seed";
 import type { MealType, SeedMenu } from "@shared/types";
 import { generateOneMenu } from "../lib/aiMenus";
 import { isHomeMenu } from "../lib/viewTypes";
-import { DIFFICULTY_LABELS } from "../lib/uiConstants";
+import type { CuisineCode } from "../lib/viewTypes";
+import { DIFFICULTY_LABELS, CUISINE_LABELS } from "../lib/uiConstants";
 import CuisineChip from "./CuisineChip";
 
 interface MenuSearchModalProps {
@@ -25,7 +25,18 @@ interface MenuSearchModalProps {
   onClose: () => void;
 }
 
-const MAX_RESULTS = 12;
+type Tab = "ALL" | CuisineCode;
+const TABS: Tab[] = ["ALL", "KR", "CN", "JP", "WS", "DINEOUT"];
+const TAB_LABEL: Record<Tab, string> = {
+  ALL: "전체",
+  KR: CUISINE_LABELS.KR,
+  CN: CUISINE_LABELS.CN,
+  JP: CUISINE_LABELS.JP,
+  WS: CUISINE_LABELS.WS,
+  DINEOUT: CUISINE_LABELS.DINEOUT,
+};
+
+const MAX_SEARCH_RESULTS = 20;
 
 function normalize(s: string): string {
   return s.toLowerCase().replace(/\s+/g, "");
@@ -53,18 +64,6 @@ function scoreMenu(menu: SeedMenu, nq: string): number | null {
   return null;
 }
 
-function searchSeed(query: string): SeedMenu[] {
-  const nq = normalize(query);
-  if (!nq) return [];
-  const scored: Array<{ menu: SeedMenu; score: number }> = [];
-  for (const menu of seedPool) {
-    const score = scoreMenu(menu, nq);
-    if (score !== null) scored.push({ menu, score });
-  }
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, MAX_RESULTS).map((s) => s.menu);
-}
-
 type GenState =
   | { status: "idle" }
   | { status: "loading" }
@@ -76,11 +75,28 @@ export default function MenuSearchModal({
   onConfirm,
   onClose,
 }: MenuSearchModalProps) {
+  const [tab, setTab] = useState<Tab>("ALL");
   const [query, setQuery] = useState("");
   const [gen, setGen] = useState<GenState>({ status: "idle" });
 
   const trimmed = query.trim();
-  const results = useMemo(() => searchSeed(query), [query]);
+
+  // 탭 범위 → (검색어 있으면) 검색, 없으면 전체 목록.
+  const list = useMemo(() => {
+    const base =
+      tab === "ALL" ? seedPool : seedPool.filter((m) => m.cuisine === tab);
+    const nq = normalize(query);
+    if (!nq) {
+      return [...base].sort((a, b) => a.name.localeCompare(b.name, "ko"));
+    }
+    const scored: Array<{ menu: SeedMenu; score: number }> = [];
+    for (const menu of base) {
+      const score = scoreMenu(menu, nq);
+      if (score !== null) scored.push({ menu, score });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, MAX_SEARCH_RESULTS).map((s) => s.menu);
+  }, [tab, query]);
 
   const runGenerate = async () => {
     setGen({ status: "loading" });
@@ -89,7 +105,6 @@ export default function MenuSearchModal({
     else setGen({ status: "error", message: res.error });
   };
 
-  // Typing invalidates a previous generation attempt.
   const onChangeQuery = (value: string) => {
     setQuery(value);
     if (gen.status !== "idle") setGen({ status: "idle" });
@@ -103,11 +118,11 @@ export default function MenuSearchModal({
       onClick={onClose}
     >
       <div
-        className="flex max-h-[85vh] w-full max-w-md flex-col rounded-t-2xl bg-white p-4 shadow-xl sm:rounded-2xl"
+        className="flex max-h-[88vh] w-full max-w-md flex-col rounded-t-2xl bg-white shadow-xl sm:rounded-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-base font-bold text-gray-900">메뉴 검색 / 추가</h2>
+        <div className="flex items-center justify-between px-4 pt-4">
+          <h2 className="text-base font-bold text-gray-900">메뉴 고르기</h2>
           <button
             type="button"
             onClick={onClose}
@@ -118,20 +133,38 @@ export default function MenuSearchModal({
           </button>
         </div>
 
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => onChangeQuery(e.target.value)}
-          autoFocus
-          placeholder="먹고 싶은 메뉴를 입력하세요 (예: 김치찌개)"
-          className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm outline-none focus:border-gray-900"
-        />
+        {/* 요리종류 탭 */}
+        <div className="mt-2 flex gap-1.5 overflow-x-auto px-4 pb-1">
+          {TABS.map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setTab(t)}
+              className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold transition ${
+                tab === t
+                  ? "bg-gray-900 text-white"
+                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              {TAB_LABEL[t]}
+            </button>
+          ))}
+        </div>
 
-        <div className="mt-3 flex-1 overflow-y-auto">
-          {/* Seed-pool matches */}
-          {results.length > 0 && (
+        <div className="px-4 pt-2">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => onChangeQuery(e.target.value)}
+            placeholder="메뉴 검색 (예: 김치찌개)"
+            className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm outline-none focus:border-gray-900"
+          />
+        </div>
+
+        <div className="mt-2 flex-1 overflow-y-auto px-4 pb-4">
+          {list.length > 0 ? (
             <ul className="space-y-2">
-              {results.map((menu) => (
+              {list.map((menu) => (
                 <li key={menu.id}>
                   <button
                     type="button"
@@ -156,35 +189,22 @@ export default function MenuSearchModal({
                 </li>
               ))}
             </ul>
+          ) : (
+            <p className="py-6 text-center text-sm text-gray-400">
+              {trimmed
+                ? `'${trimmed}'와(과) 맞는 메뉴가 없어요.`
+                : "이 탭에 메뉴가 없어요."}
+            </p>
           )}
 
-          {/* No seed match → offer AI generation */}
-          {trimmed.length > 0 && results.length === 0 &&
-            gen.status === "idle" && (
-            <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-4 text-center">
-              <p className="text-sm text-gray-700">
-                '<span className="font-semibold">{trimmed}</span>'은(는) 없는
-                메뉴입니다. 추가 생성할까요?
-              </p>
-              <button
-                type="button"
-                onClick={runGenerate}
-                className="mt-3 rounded-lg bg-gray-900 px-4 py-2 text-sm font-bold text-white hover:bg-gray-800"
-              >
-                ✨ 추가 생성
-              </button>
-            </div>
-          )}
-
-          {/* When there ARE matches, still allow generating something new */}
-          {trimmed.length > 0 && results.length > 0 &&
-            gen.status === "idle" && (
+          {/* 맘에 드는 게 없으면 → AI 추가 생성 (검색어 입력 시) */}
+          {trimmed.length > 0 && gen.status === "idle" && (
             <button
               type="button"
               onClick={runGenerate}
-              className="mt-3 w-full rounded-lg border border-gray-200 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50"
+              className="mt-3 w-full rounded-lg border border-dashed border-gray-300 bg-gray-50 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-100"
             >
-              원하는 메뉴가 없나요? '{trimmed}' 추가 생성
+              ✨ '{trimmed}' 직접 추가 생성
             </button>
           )}
 
@@ -225,9 +245,7 @@ export default function MenuSearchModal({
                   {gen.menu.name}
                 </span>
               </div>
-              <p className="mb-1 text-xs text-gray-600">
-                {gen.menu.description}
-              </p>
+              <p className="mb-1 text-xs text-gray-600">{gen.menu.description}</p>
               {isHomeMenu(gen.menu) && (
                 <p className="mb-3 text-xs text-gray-500">
                   ⏱ {gen.menu.cookTimeMin}분 ·{" "}
@@ -243,12 +261,6 @@ export default function MenuSearchModal({
                 '{gen.menu.name}' 확정
               </button>
             </div>
-          )}
-
-          {trimmed.length === 0 && results.length === 0 && (
-            <p className="py-6 text-center text-sm text-gray-400">
-              메뉴 이름을 입력하면 비슷한 메뉴를 찾아드려요.
-            </p>
           )}
         </div>
       </div>

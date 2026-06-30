@@ -1,7 +1,7 @@
 import { seedPool } from "@shared/seed";
 import type { SeedMenu, Cuisine } from "@shared/types";
-import { getPreferences } from "./preferences";
-import type { PreferencesState } from "./preferences";
+import { getPreferences, getDiningStyle } from "./preferences";
+import type { PreferencesState, DiningStyle } from "./preferences";
 
 /**
  * 시드 풀 기반 선지 추천 — RULES R1 / R9.
@@ -91,11 +91,19 @@ function pickHome(pool: SeedMenu[], n: number, perCuisineMax = 2): SeedMenu[] {
  * 한 슬롯의 5선지 생성. 항상 5개를 보장(집밥 4 + 외식 1 목표,
  * 부족 시 가능한 만큼 + 폴백). 결과는 화면 표시용 SeedMenu[].
  */
+/** 식사 스타일별 (집밥 수, 외식 수) — 합은 항상 5 (RULES R1-1/R1-2). */
+function styleSplit(style: DiningStyle): { home: number; dineout: number } {
+  if (style === "home") return { home: 5, dineout: 0 };
+  if (style === "dineout") return { home: 2, dineout: 3 }; // 외식 위주: 외식 3개+
+  return { home: 4, dineout: 1 }; // balanced(기본)
+}
+
 export function buildSlotOptions(c: SlotConstraints = {}): SeedMenu[] {
   const excludedCuisines = new Set(c.excludedCuisines ?? []);
   const excludedIds = new Set(c.excludedIds ?? []);
   const variant = c.variant ?? 0;
   const prefs = getPreferences();
+  const { home: homeCount, dineout: dineoutCount } = styleSplit(getDiningStyle());
 
   const homeAvail = seededShuffle(
     HOME_POOL.filter(
@@ -118,10 +126,13 @@ export function buildSlotOptions(c: SlotConstraints = {}): SeedMenu[] {
   const biased = [...homeAvail].sort(
     (a, b) => prefScore(b, prefs) - prefScore(a, prefs),
   );
-  const wildcard = homeAvail[0];
+  // 탐색(wildcard) 1개는 남긴다 — 집밥을 1개 이상 뽑을 때만 의미 있음.
+  const wildcard = homeCount > 0 ? homeAvail[0] : undefined;
   let homeOrdered: SeedMenu[];
   if (wildcard) {
-    const head = biased.filter((m) => m.id !== wildcard.id).slice(0, 3);
+    const head = biased
+      .filter((m) => m.id !== wildcard.id)
+      .slice(0, Math.max(0, homeCount - 1));
     const headIds = new Set(head.map((m) => m.id));
     const tail = biased.filter(
       (m) => m.id !== wildcard.id && !headIds.has(m.id),
@@ -131,8 +142,8 @@ export function buildSlotOptions(c: SlotConstraints = {}): SeedMenu[] {
     homeOrdered = biased;
   }
 
-  const home = pickHome(homeOrdered, 4);
-  const dineout = dineoutAvail.slice(0, 1);
+  const home = pickHome(homeOrdered, homeCount);
+  const dineout = dineoutAvail.slice(0, dineoutCount);
 
   let options = [...home, ...dineout];
 

@@ -11,9 +11,18 @@ import {
   setAllergies,
   setDislikedIngredients,
   resetLearning,
+  useDiningStyle,
+  setDiningStyle,
 } from "../lib/preferences";
+import type { DiningStyle } from "../lib/preferences";
 
 const SERVINGS_OPTIONS = [1, 2, 3, 4, 5, 6];
+
+const DINING_OPTIONS: Array<{ key: DiningStyle; label: string; hint: string }> = [
+  { key: "home", label: "집밥 위주", hint: "집밥 5개" },
+  { key: "balanced", label: "균형", hint: "집밥 4 + 외식 1" },
+  { key: "dineout", label: "외식 위주", hint: "외식 3개+" },
+];
 
 export default function SettingsScreen() {
   const navigate = useNavigate();
@@ -21,6 +30,8 @@ export default function SettingsScreen() {
 
   // RULES R5: 고정 기본 인분 없음. 마지막 선택값을 기억하되 강제 고정하지 않는다.
   const servings = useServings();
+  // 선지 구성 비율(집밥/외식) — RULES R1-2 오버라이드.
+  const diningStyle = useDiningStyle();
   // RULES R3: 알레르기·비선호 재료·학습 가중치는 preferences 스토어가 단일 출처.
   const prefs = usePreferences();
   const [resetDone, setResetDone] = useState(false);
@@ -41,6 +52,37 @@ export default function SettingsScreen() {
       <AppHeader title="설정" subtitle="취향·인분 수 관리" />
 
       <div className="space-y-4 px-4 py-4">
+        {/* 식사 스타일 (집밥/균형/외식 위주) */}
+        <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+          <h2 className="text-sm font-bold text-gray-900">식사 스타일</h2>
+          <p className="mt-0.5 mb-3 text-xs text-gray-500">
+            선지 구성을 정해요. 외식 위주면 외식이 더 많이 나와요.
+          </p>
+          <div className="grid grid-cols-3 gap-2">
+            {DINING_OPTIONS.map((opt) => (
+              <button
+                key={opt.key}
+                type="button"
+                onClick={() => setDiningStyle(opt.key)}
+                className={`rounded-xl border px-2 py-2.5 text-center transition ${
+                  diningStyle === opt.key
+                    ? "border-gray-900 bg-gray-900 text-white"
+                    : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
+                }`}
+              >
+                <span className="block text-sm font-semibold">{opt.label}</span>
+                <span
+                  className={`mt-0.5 block text-[11px] ${
+                    diningStyle === opt.key ? "text-gray-300" : "text-gray-400"
+                  }`}
+                >
+                  {opt.hint}
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+
         {/* 인분 수 */}
         <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
           <h2 className="text-sm font-bold text-gray-900">인분 수</h2>

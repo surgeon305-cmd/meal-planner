@@ -227,3 +227,57 @@ function subscribeServings(cb: () => void): () => void {
 export function useServings(): number | null {
   return useSyncExternalStore(subscribeServings, readServings, readServings);
 }
+
+// ---- dining style external store (집밥/균형/외식 위주) ------------------------
+// 선지 구성 비율을 조정한다 — RULES R1-2(기본 집밥4+외식1)의 사용자 오버라이드.
+
+/** 식사 스타일: 집밥 위주 / 균형 / 외식 위주. */
+export type DiningStyle = "home" | "balanced" | "dineout";
+
+const DINING_KEY = "mp.diningStyle";
+const DINING_STYLES: readonly DiningStyle[] = ["home", "balanced", "dineout"];
+
+let diningCache: DiningStyle | undefined;
+const diningListeners = new Set<() => void>();
+
+function readDining(): DiningStyle {
+  if (diningCache !== undefined) return diningCache;
+  if (typeof window === "undefined") {
+    diningCache = "balanced";
+    return diningCache;
+  }
+  const raw = window.localStorage.getItem(DINING_KEY);
+  diningCache = DINING_STYLES.includes(raw as DiningStyle)
+    ? (raw as DiningStyle)
+    : "balanced";
+  return diningCache;
+}
+
+/** 비훅 getter — recommend.ts 에서 선지 구성 비율 결정에 사용. */
+export function getDiningStyle(): DiningStyle {
+  return readDining();
+}
+
+export function setDiningStyle(value: DiningStyle): void {
+  diningCache = value;
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(DINING_KEY, value);
+    } catch {
+      // 무시.
+    }
+  }
+  diningListeners.forEach((l) => l());
+}
+
+function subscribeDining(cb: () => void): () => void {
+  diningListeners.add(cb);
+  return () => {
+    diningListeners.delete(cb);
+  };
+}
+
+/** 훅: 식사 스타일을 구독한다(기본 balanced). */
+export function useDiningStyle(): DiningStyle {
+  return useSyncExternalStore(subscribeDining, readDining, readDining);
+}
