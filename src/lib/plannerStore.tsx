@@ -107,43 +107,69 @@ export function PlannerProvider({ children }: { children: ReactNode }) {
     entriesRef.current = entries;
   }, [entries]);
 
-  // 사용자/활성 plan 변경 시 해당 plan의 meal_entries 전체 로드.
-  // 비로그인 또는 활성 plan 없음 → 빈 상태.
+  // 사용자/활성 plan 변경 시 해당 plan의 meal_entries 전체 로드 + Realtime 구독.
+  // 비로그인 또는 활성 plan 없음 → 빈 상태, 구독 없음. (RULES R10)
   useEffect(() => {
     if (!user || !activePlanId) {
       setEntries({});
       setLoading(false);
       return;
     }
+    const planId = activePlanId;
     let mounted = true;
-    setLoading(true);
-    supabase
-      .from("meal_entries")
-      .select("entry_date, meal, menu_id, cuisine, menu")
-      .eq("plan_id", activePlanId)
-      .then(({ data, error }) => {
-        if (!mounted) return;
-        if (error) {
-          console.error("[planner] load failed", error.message);
-          setEntries({});
+
+    // entries를 채우는 select를 재실행한다 (초기 로드 + Realtime 변경 반영).
+    const reload = () => {
+      void supabase
+        .from("meal_entries")
+        .select("entry_date, meal, menu_id, cuisine, menu")
+        .eq("plan_id", planId)
+        .then(({ data, error }) => {
+          if (!mounted) return;
+          if (error) {
+            console.error("[planner] load failed", error.message);
+            setEntries({});
+            setLoading(false);
+            return;
+          }
+          const next: Record<string, DayEntries> = {};
+          for (const row of (data ?? []) as MealEntryRow[]) {
+            const day = next[row.entry_date] ?? {};
+            day[row.meal] = {
+              menuId: row.menu_id,
+              cuisine: row.cuisine,
+              menu: row.menu,
+            };
+            next[row.entry_date] = day;
+          }
+          setEntries(next);
           setLoading(false);
-          return;
-        }
-        const next: Record<string, DayEntries> = {};
-        for (const row of (data ?? []) as MealEntryRow[]) {
-          const day = next[row.entry_date] ?? {};
-          day[row.meal] = {
-            menuId: row.menu_id,
-            cuisine: row.cuisine,
-            menu: row.menu,
-          };
-          next[row.entry_date] = day;
-        }
-        setEntries(next);
-        setLoading(false);
-      });
+        });
+    };
+
+    setLoading(true);
+    reload();
+
+    // 다른 클라이언트가 이 plan의 엔트리를 바꾸면 다시 로드한다 (공유 식단 동기화).
+    const channel = supabase
+      .channel("plan-entries:" + planId)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "meal_entries",
+          filter: "plan_id=eq." + planId,
+        },
+        () => {
+          void reload();
+        },
+      )
+      .subscribe();
+
     return () => {
       mounted = false;
+      void supabase.removeChannel(channel);
     };
   }, [user, activePlanId]);
 

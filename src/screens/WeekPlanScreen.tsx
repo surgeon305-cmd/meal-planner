@@ -9,6 +9,7 @@ import CalendarMonth from "../components/CalendarMonth";
 import { buildSlotOptions } from "../lib/recommend";
 import { usePlanner } from "../lib/plannerStore";
 import type { DayEntries } from "../lib/plannerStore";
+import { recordSelection } from "../lib/preferences";
 import { MEAL_LABELS } from "../lib/uiConstants";
 import {
   addDaysISO,
@@ -89,6 +90,8 @@ function SlotCard({ date, meal }: SlotCardProps) {
   const confirm = () => {
     if (!draft) return;
     selectMenu(date, meal, draft);
+    // 확정은 선호 가중치를 +3 한다 (RULES R3 select 신호).
+    recordSelection(draft);
     setEditing(false);
     setDraft(null);
   };

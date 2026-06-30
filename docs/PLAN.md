@@ -30,7 +30,7 @@
 | 인증 | Supabase Auth (이메일+비밀번호 · 구글 OAuth) | 구글은 OAuth 클라이언트 설정 필요 |
 | AI | Claude API · 기본 **`claude-opus-4-8`** | **Edge Function 안에서만 호출** (키 보호). 5선지 + single 모드 |
 | 추천 출처 | **시드 풀 120개 우선** + AI 보충 | 일상은 시드, AI는 '추가 생성'·부족 시 |
-| 저장 | 취향=localStorage / 식단=Supabase | 학습·variant는 localStorage, 엔트리는 DB |
+| 저장 | 취향·식단·장바구니 체크=Supabase(계정 동기화) | 취향(`preference_profiles`)·엔트리·`shopping_checks` 모두 DB, localStorage는 오프라인 캐시·variant뿐 |
 | 배포 | 프론트: Vercel/Netlify · 백엔드: Supabase 클라우드 | RULES R12 |
 | PWA 업데이트 | autoUpdate + 60초 폴링 → 자동 새로고침 | 캐시 삭제·수동 업데이트 불필요 (R12-4) |
 
@@ -48,14 +48,14 @@
 ```
 - Claude API 키는 Edge Function 환경변수에만. 프론트 노출 금지.
 
-## 5. 데이터 모델 (상세는 RULES R8/R10 · 0001_init.sql · 0002_sharing.sql)
+## 5. 데이터 모델 (상세는 RULES R8/R10 · 0001_init.sql · 0002_sharing.sql · 0003_prefs_sync.sql)
 **날짜 기반 + 공유 식단** — 엔트리는 날짜별이며 **활성 식단(plan)에 귀속**.
 - `plans` — 식단(개인 "내 식단" / 공유). name, owner, kind, **share_code** (R10)
 - `plan_members` — 식단 멤버(owner/member), 공유 코드로 참여
 - `meal_entries` — **(plan_id, 날짜, 끼니) 확정 한 끼.** 핵심 테이블. upsert, 거른 끼니는 행 없음
-- `preference_profiles` — 취향 미러(주 출처는 localStorage `prefs:v1`, R3)
+- `preference_profiles` — 취향 **단일 출처(계정 동기화)**: 가중치·차단·알레르기·`last_servings`(인분)·`dining_style`(R3). localStorage는 오프라인 캐시
 - `menu_cache` — AI 5선지 보충분 캐시(시드 부족 시)
-- `shopping_checks` — 장바구니 체크 유지(현재는 localStorage)
+- `shopping_checks` — 장바구니 체크 유지(**계정 저장 + Realtime 동기화**, R8-6)
 - **시드 풀** `shared/seed/` — 120개 기본 레시피(R9), 선지·갱신의 1차 출처(코드 내장)
 - RLS: `security definer` `is_plan_member`로 멤버만 접근(R10-5)
 
@@ -77,15 +77,20 @@
 - 취향 학습(좋아요/싫어요·알레르기·비선호 → 추천 반영), 인분 수 재료 스케일
 - AI 메뉴 검색/추가(＋버튼, single 모드), 식단 공유(plans/멤버/공유코드), PWA 아이콘
 - **PWA 실시간 자동 업데이트**(autoUpdate + 60초 폴링 → 자동 새로고침, R12-4)
+- **취향 계정 동기화**(`preference_profiles` 단일 출처, 로그인 시 하이드레이트 + write-through; 인분·식사스타일 포함, R3/R5)
+- **확정(select) 학습 신호 연동**(`recordSelection` → cuisine/tags +3, R3)
+- **실시간 공유 동기화**(`plannerStore` Realtime 구독 → 멤버 변경 시 라이브 반영, R10-7)
+- **장바구니 체크 계정화**(`shopping_checks` 테이블 + Realtime, localStorage 폐기, R8-6)
 
 ### 사용자 액션 필요 ⚠️
 - **`0002_sharing.sql` 적용**(미적용 시 런타임 에러) — Supabase SQL Editor
+- **`0003_prefs_sync.sql` 적용**(취향 동기화 컬럼 + Realtime publication; 미적용 시 실시간 공유·장바구니 체크 동기화 동작 안 함) — Supabase SQL Editor
 - AI '추가 생성' 활성화: `generate-menus` 배포 + `ANTHROPIC_API_KEY` 시크릿
 - 구글 로그인: Google Cloud OAuth 클라이언트 + Supabase provider 설정
 
 ### 다음 후보
-- select/skip 학습 신호 연동(R3 ⏳), 장바구니 체크 DB화(`shopping_checks`)
-- 번들 코드 스플리팅(현재 ~630KB), 오프라인 다듬기, 실시간 공유 동기화
+- `skip`(갱신) 학습 신호 연동(R3 ⏳ — 마지막 미연동 신호)
+- 번들 코드 스플리팅(현재 ~630KB), 오프라인 다듬기
 
 ## 8. 확정 / 미해결
 **확정됨 (2026-06-29):**
@@ -106,7 +111,14 @@
 - **AI 메뉴 검색/추가**(＋버튼) (RULES R11), **식단 공유**(공유 코드) (RULES R10)
 - 인증: 이메일 + **구글 OAuth** 추가
 
+**확정됨 (2026-06-30, 4차 — 계정 동기화·실시간):**
+- **취향 계정 동기화**: `preference_profiles`를 단일 출처로(로그인 시 하이드레이트 + write-through). 인분(`last_servings`)·식사 스타일(`dining_style`) 포함 — RULES R3/R5
+- **확정(select)이 학습에 +3 반영** — RULES R3
+- **실시간 공유 동기화**: `meal_entries` Realtime 구독으로 멤버 간 라이브 편집 — RULES R10-7
+- **장바구니 체크 계정화**: `shopping_checks`(scope=plan, key=`name__unit`) + Realtime — RULES R8-6
+- 마이그레이션 **`0003_prefs_sync.sql`** 추가(컬럼 + Realtime publication) — **사용자가 적용해야 함**
+
 **추후 검토:**
 - 검색 링크 서비스 우선순위 — 기본 셋 다 노출
 - 쿨다운 정책 과한지 재검토 · 시드 풀 확장(120→)
-- 학습 select/skip 신호, 장바구니 체크 DB화, 번들 코드 스플리팅, 실시간 공유
+- 학습 `skip` 신호, 번들 코드 스플리팅

@@ -8,23 +8,16 @@ import { useServings } from "../lib/preferences";
 import { CATEGORY_LABELS, CATEGORY_ORDER } from "../lib/uiConstants";
 import { buildShoppingLinks } from "../lib/searchLinks";
 import { upcomingDates } from "../lib/dates";
+import { useAuth } from "../lib/auth";
+import { useActivePlanId } from "../lib/plans";
+import { supabase } from "../lib/supabaseClient";
 import type { IngredientCategory, SeedMenu } from "@shared/types";
 
 // 장바구니는 확정 엔트리(visible horizon 14일)의 재료를 R4대로 합산한다 (RULES R4/R8-6).
-// TODO(Phase 1): localStorage 체크 상태 → 사용자별 서버 저장 (RULES R8-6).
+// 체크 상태는 shopping_checks 테이블에 사용자별로 저장하여 기기·공유 멤버 간 동기화한다
+// (RULES R8-6/R10). scope = 활성 plan id, item_key = `${name}__${unit}`.
 
-const CART_CHECKS_KEY = "cart-checks:v1";
 const HORIZON_DAYS = 14;
-
-function loadChecks(): Record<string, boolean> {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = window.localStorage.getItem(CART_CHECKS_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
-  } catch {
-    return {};
-  }
-}
 
 function formatQty(item: CartItem): string {
   if (item.unit === "약간") return "약간";
@@ -77,9 +70,14 @@ function ItemRow({ item, checked, onToggle }: ItemRowProps) {
   );
 }
 
+const itemKey = (item: CartItem) => `${item.name}__${item.unit}`;
+
 export default function ShoppingListScreen() {
   const { entries } = usePlanner();
   const servings = useServings();
+  const { user } = useAuth();
+  const scope = useActivePlanId();
+  const userId = user?.id ?? null;
 
   // 화면 범위(오늘+13일)의 확정 메뉴 재료를 선택 인분 수로 스케일해 합산 (R4/R5).
   const items = useMemo(() => {
@@ -93,22 +91,79 @@ export default function ShoppingListScreen() {
     return aggregateIngredients(menus, servings);
   }, [entries, servings]);
 
-  const [checked, setChecked] = useState<Record<string, boolean>>(loadChecks);
+  const [checked, setChecked] = useState<Record<string, boolean>>({});
   const [pantryOpen, setPantryOpen] = useState(false);
 
-  // 체크 상태를 localStorage에 영구 저장 (네비게이션/새로고침에도 유지).
+  // 체크 상태를 shopping_checks(user_id, scope)에서 로드하고, Realtime으로
+  // 공유 plan 멤버의 변경을 실시간 반영한다. 로그인/활성 plan이 없으면 건너뛴다.
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem(CART_CHECKS_KEY, JSON.stringify(checked));
-    } catch {
-      // 무시.
+    if (!userId || !scope) {
+      setChecked({});
+      return;
     }
-  }, [checked]);
+    let active = true;
 
-  const itemKey = (item: CartItem) => `${item.name}__${item.unit}`;
-  const toggle = (item: CartItem) =>
-    setChecked((prev) => ({ ...prev, [itemKey(item)]: !prev[itemKey(item)] }));
+    const reloadChecks = async () => {
+      const { data, error } = await supabase
+        .from("shopping_checks")
+        .select("item_key, checked")
+        .match({ user_id: userId, scope });
+      if (!active || error || !data) return;
+      const map: Record<string, boolean> = {};
+      for (const row of data as { item_key: string; checked: boolean }[]) {
+        if (row.checked) map[row.item_key] = true;
+      }
+      setChecked(map);
+    };
+
+    void reloadChecks();
+
+    const channel = supabase
+      .channel("cart-checks:" + scope)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "shopping_checks",
+          filter: "scope=eq." + scope,
+        },
+        () => {
+          void reloadChecks();
+        },
+      )
+      .subscribe();
+
+    return () => {
+      active = false;
+      void supabase.removeChannel(channel);
+    };
+  }, [userId, scope]);
+
+  // 토글: 낙관적 로컬 갱신 후 영속화. 실패 시 롤백. 비로그인/비활성 plan이면 로컬만.
+  const toggle = (item: CartItem) => {
+    const key = itemKey(item);
+    const next = !checked[key];
+    setChecked((prev) => ({ ...prev, [key]: next }));
+
+    if (!userId || !scope) return;
+
+    void (async () => {
+      const { error } = next
+        ? await supabase.from("shopping_checks").upsert(
+            { user_id: userId, scope, item_key: key, checked: true },
+            { onConflict: "user_id,scope,item_key" },
+          )
+        : await supabase
+            .from("shopping_checks")
+            .delete()
+            .match({ user_id: userId, scope, item_key: key });
+      if (error) {
+        // 롤백: 직전 값으로 되돌린다.
+        setChecked((prev) => ({ ...prev, [key]: !next }));
+      }
+    })();
+  };
 
   // 일반 재료: 카테고리별 그룹 / 기본 양념: 별도 그룹 (RULES R4).
   const { categoryGroups, pantryItems } = useMemo(() => {
