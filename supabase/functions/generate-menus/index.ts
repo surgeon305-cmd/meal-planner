@@ -52,7 +52,9 @@ function handleOptions(req: Request): Response | null {
 // --- Constants (RULES R0/R2/R6) ---------------------------------------------
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
-const MODEL = "claude-opus-4-8"; // RULES R6-4 (quality-first default)
+const MODEL = "claude-opus-4-8"; // 5선지 모드 기본 (RULES R6-4, 품질 우선)
+// '추가 생성'(single 모드)은 정해진 스키마로 레시피 1개 생성이라 단순 → 저렴·빠른 Haiku.
+const SINGLE_MODEL = "claude-haiku-4-5";
 const MAX_TOKENS = 4096;
 const EXPECTED_OPTION_COUNT = 5; // RULES R1-1
 
@@ -210,6 +212,7 @@ async function callClaude(
   apiKey: string,
   systemPrompt: string,
   userPrompt: string,
+  model: string = MODEL,
 ): Promise<unknown> {
   const res = await fetch(ANTHROPIC_URL, {
     method: "POST",
@@ -219,7 +222,7 @@ async function callClaude(
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      model: MODEL,
+      model,
       max_tokens: MAX_TOKENS,
       system: systemPrompt,
       messages: [{ role: "user", content: userPrompt }],
@@ -325,7 +328,7 @@ async function generateSingleValidated(
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const menu = await callClaude(apiKey, systemPrompt, userPrompt);
+      const menu = await callClaude(apiKey, systemPrompt, userPrompt, SINGLE_MODEL);
       if (isValidMenuOption(menu)) return menu;
       console.warn(
         `generate-menus(single): validation failed (attempt ${attempt + 1}/2)`,
